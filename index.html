@@ -495,6 +495,77 @@
       return c.toDataURL()
     }
 
+    function makeDrifterSprite(r = 16) {
+      const size = r * 2 + 4
+      const c = document.createElement("canvas")
+      c.width = size
+      c.height = size
+      const ctx = c.getContext("2d")
+      const cx = size / 2
+      const cy = size / 2
+
+      // outer glow
+      const glowGrad = ctx.createRadialGradient(cx, cy, r * 0.3, cx, cy, r)
+      glowGrad.addColorStop(0, "rgba(200, 180, 255, 0.9)")
+      glowGrad.addColorStop(0.5, "rgba(150, 120, 200, 0.5)")
+      glowGrad.addColorStop(1, "rgba(100, 80, 150, 0)")
+      ctx.fillStyle = glowGrad
+      ctx.beginPath()
+      ctx.arc(cx, cy, r, 0, Math.PI * 2)
+      ctx.fill()
+
+      // core
+      ctx.fillStyle = "rgba(255, 255, 255, 0.8)"
+      ctx.beginPath()
+      ctx.arc(cx, cy, r * 0.3, 0, Math.PI * 2)
+      ctx.fill()
+
+      // static specks
+      ctx.fillStyle = "rgba(255,255,255,0.4)"
+      for (let i = 0; i < 5; i++) {
+        const angle = Math.random() * Math.PI * 2
+        const dist = r * 0.4 + Math.random() * r * 0.4
+        ctx.fillRect(cx + Math.cos(angle) * dist, cy + Math.sin(angle) * dist, 2, 2)
+      }
+
+      return c.toDataURL()
+    }
+
+    function makePillarSprite(w = 24, h = 48) {
+      const c = document.createElement("canvas")
+      c.width = w
+      c.height = h
+      const ctx = c.getContext("2d")
+
+      // body gradient - dark metallic
+      const bodyGrad = ctx.createLinearGradient(0, 0, w, 0)
+      bodyGrad.addColorStop(0, "#444444")
+      bodyGrad.addColorStop(0.3, "#666666")
+      bodyGrad.addColorStop(0.7, "#555555")
+      bodyGrad.addColorStop(1, "#333333")
+      ctx.fillStyle = bodyGrad
+      ctx.fillRect(2, 4, w - 4, h - 4)
+
+      // top cap
+      ctx.fillStyle = "#777777"
+      ctx.fillRect(0, 0, w, 6)
+
+      // horizontal bands
+      ctx.fillStyle = "#555555"
+      ctx.fillRect(0, h * 0.33, w, 3)
+      ctx.fillRect(0, h * 0.66, w, 3)
+
+      // static glitch lines
+      ctx.fillStyle = "rgba(255,255,255,0.3)"
+      for (let i = 0; i < 6; i++) {
+        const y = 8 + Math.random() * (h - 16)
+        const lw = 4 + Math.random() * 8
+        ctx.fillRect(4 + Math.random() * (w - 12), y, lw, 2)
+      }
+
+      return c.toDataURL()
+    }
+
     // static death particles for enemies
     function spawnStaticBurst(p) {
       for (let i = 0; i < 15; i++) {
@@ -510,6 +581,9 @@
         ])
       }
     }
+
+    // health drop from enemies (called from game scene)
+    const HEALTH_DROP_CHANCE = 0.25  // 25% chance
 
     // ============================================
     // EFFECT HELPERS
@@ -613,6 +687,8 @@
     loadSprite("spitter", makeSpitterSprite(24, 36))
     loadSprite("projectile", makeProjectileSprite(8))
     loadSprite("rusher", makeRusherSprite(40, 18))
+    loadSprite("drifter", makeDrifterSprite(16))
+    loadSprite("pillar", makePillarSprite(24, 48))
 
     // ============================================
     // MENU SCENE
@@ -697,6 +773,30 @@
       let walkTimer = 0
       let depth = 1
       let transitioning = false
+      let inUpgradeRoom = false
+
+      // === PLAYER UPGRADES ===
+      const playerStats = {
+        maxHealth: 5,
+        maxSignal: SIGNAL_MAX,
+        slashDamage: 1,
+        moveSpeed: SPEED,
+        dashDistance: DASH_DISTANCE,
+        signalRegen: 1.0,  // multiplier
+      }
+
+      const UPGRADES = [
+        { id: "health1", name: "Vitality", desc: "+2 Max Health", apply: () => { playerStats.maxHealth += 2; health = Math.min(health + 2, playerStats.maxHealth) } },
+        { id: "health2", name: "Resilience", desc: "+1 Max Health", apply: () => { playerStats.maxHealth += 1; health = Math.min(health + 1, playerStats.maxHealth) } },
+        { id: "signal1", name: "Attunement", desc: "+3 Max Signal", apply: () => { playerStats.maxSignal += 3 } },
+        { id: "signal2", name: "Flow", desc: "+50% Signal Regen", apply: () => { playerStats.signalRegen *= 1.5 } },
+        { id: "damage1", name: "Sharp Edge", desc: "+1 Slash Damage", apply: () => { playerStats.slashDamage += 1 } },
+        { id: "speed1", name: "Swift", desc: "+20% Move Speed", apply: () => { playerStats.moveSpeed *= 1.2 } },
+        { id: "dash1", name: "Long Dash", desc: "+50% Dash Distance", apply: () => { playerStats.dashDistance *= 1.5 } },
+        { id: "heal1", name: "Second Wind", desc: "Restore 3 Health", apply: () => { health = Math.min(health + 3, playerStats.maxHealth) } },
+      ]
+
+      let appliedUpgrades = []
 
       add([sprite("bg"), pos(0, 0), z(Z.BG)])
       loop(0.25, spawnAmbientParticle)
@@ -739,10 +839,11 @@
       ]
 
       function generateRoom() {
-        // clear existing platforms, enemies, and projectiles
+        // clear existing platforms, enemies, projectiles, and upgrade UI
         get("platform").forEach(destroy)
         get("enemy").forEach(destroy)
         get("projectile").forEach(destroy)
+        get("upgradeUI").forEach(destroy)
 
         // pick random pattern
         const pattern = ROOM_PATTERNS[Math.floor(Math.random() * ROOM_PATTERNS.length)]
@@ -753,10 +854,12 @@
           addOneWayPlatform(spr, x, y)
         })
 
-        // spawn enemies based on depth
-        const crawlerCount = Math.min(2 + Math.floor(depth / 2), 5)
-        const spitterCount = depth >= 3 ? Math.min(1 + Math.floor((depth - 3) / 2), 2) : 0
-        const rusherCount = depth >= 4 ? Math.min(1 + Math.floor((depth - 4) / 3), 2) : 0
+        // spawn enemies based on depth (gentler early ramp)
+        const crawlerCount = Math.min(1 + Math.floor(depth / 2), 4)  // 1, 1, 2, 2, 3, 3, 4...
+        const spitterCount = depth >= 3 ? Math.min(Math.floor((depth - 2) / 2), 2) : 0  // 0, 0, 0, 1, 1, 2...
+        const rusherCount = depth >= 4 ? Math.min(Math.floor((depth - 3) / 3), 2) : 0  // 0, 0, 0, 0, 1, 1, 1, 2...
+        const drifterCount = depth >= 6 ? Math.min(Math.floor((depth - 5) / 3), 2) : 0  // after first upgrade
+        const pillarCount = depth >= 7 ? Math.min(Math.floor((depth - 6) / 4), 2) : 0  // tanks at depth 7+
 
         // spawn crawlers
         for (let i = 0; i < crawlerCount; i++) {
@@ -776,6 +879,19 @@
         for (let i = 0; i < rusherCount; i++) {
           const spawnX = 550 + Math.random() * 200
           wait(1.5 + i * 1.5, () => spawnRusher(spawnX, height() - 48))
+        }
+
+        // spawn drifters (floating in air)
+        for (let i = 0; i < drifterCount; i++) {
+          const spawnX = 450 + Math.random() * 300
+          const spawnY = 150 + Math.random() * 150  // upper area
+          wait(2 + i * 1, () => spawnDrifter(spawnX, spawnY))
+        }
+
+        // spawn pillars (ground level tanks)
+        for (let i = 0; i < pillarCount; i++) {
+          const spawnX = 500 + Math.random() * 250
+          wait(2.5 + i * 2, () => spawnPillar(spawnX, height() - 48))
         }
       }
 
@@ -1110,6 +1226,130 @@
         return rusher
       }
 
+      // === DRIFTER (floater, depth 5+) ===
+      const DRIFTER_SPEED = 40  // slow drift toward player
+      const DRIFTER_BOB_SPEED = 2  // sine wave frequency
+      const DRIFTER_BOB_AMOUNT = 15  // sine wave amplitude
+
+      function spawnDrifter(x, y) {
+        const baseY = y
+        const phaseOffset = Math.random() * Math.PI * 2  // random start phase
+
+        const drifter = add([
+          sprite("drifter"),
+          pos(x, y),
+          area({ scale: 0.7 }),  // smaller hitbox than visual
+          anchor("center"),
+          scale(1),
+          opacity(0.9),
+          z(Z.PLATFORMS + 1),
+          "enemy",
+          "drifter",
+          {
+            hp: 1,
+            damage: 1,
+            baseY: baseY,
+          }
+        ])
+
+        drifter.onUpdate(() => {
+          if (!drifter.exists() || !player.exists()) return
+
+          // slowly drift toward player X
+          const dx = player.pos.x - drifter.pos.x
+          drifter.pos.x += Math.sign(dx) * DRIFTER_SPEED * dt()
+
+          // bob up and down
+          drifter.pos.y = drifter.baseY + Math.sin(time() * DRIFTER_BOB_SPEED + phaseOffset) * DRIFTER_BOB_AMOUNT
+
+          // pulsing glow effect
+          drifter.opacity = 0.7 + Math.sin(time() * 3 + phaseOffset) * 0.2
+
+          // keep within bounds
+          drifter.pos.x = Math.max(30, Math.min(width() - 30, drifter.pos.x))
+        })
+
+        return drifter
+      }
+
+      // === PILLAR (tank, depth 7+) ===
+      const PILLAR_SPEED = 25  // very slow
+
+      function spawnPillar(x, y) {
+        const pillar = add([
+          sprite("pillar"),
+          pos(x, y),
+          area(),
+          body(),
+          anchor("bot"),
+          scale(1),
+          z(Z.PLATFORMS + 1),
+          "enemy",
+          "pillar",
+          {
+            hp: 4,
+            damage: 1,
+          }
+        ])
+
+        pillar.onUpdate(() => {
+          if (!pillar.exists() || !pillar.scale || !player.exists()) return
+
+          // slow walk toward player
+          const dx = player.pos.x - pillar.pos.x
+          pillar.pos.x += Math.sign(dx) * PILLAR_SPEED * dt()
+          pillar.scale.x = dx > 0 ? 1 : -1
+
+          // slight sway for menace
+          pillar.angle = Math.sin(time() * 2) * 2
+        })
+
+        // fall death
+        pillar.onUpdate(() => {
+          if (!pillar.exists()) return
+          if (pillar.pos.y > height() + 50) {
+            destroy(pillar)
+          }
+        })
+
+        return pillar
+      }
+
+      // === HEALTH DROPS ===
+      function spawnHealthDrop(p) {
+        const drop = add([
+          circle(8),
+          pos(p.x, p.y),
+          area(),
+          anchor("center"),
+          color(255, 50, 80),
+          opacity(1),
+          z(Z.PARTICLES + 5),
+          "healthDrop",
+        ])
+
+        // floating animation
+        const startY = p.y
+        drop.onUpdate(() => {
+          if (!drop.exists()) return
+          drop.pos.y = startY + Math.sin(time() * 4) * 5
+          drop.opacity = 0.7 + Math.sin(time() * 6) * 0.3
+        })
+
+        // despawn after 8 seconds
+        wait(8, () => { if (drop.exists()) destroy(drop) })
+      }
+
+      // player picks up health
+      player.onCollide("healthDrop", (drop) => {
+        if (health < playerStats.maxHealth) {
+          health = Math.min(health + 1, playerStats.maxHealth)
+          healthText.text = "HEALTH: " + "♥".repeat(health)
+          floatingText(vec2(player.pos.x, player.pos.y - 40), "+1", [50, 255, 100])
+        }
+        destroy(drop)
+      })
+
       // === PLAYER DAMAGE FROM ENEMIES ===
       player.onCollide("enemy", (enemy) => {
         if (playerInvincible) return
@@ -1214,6 +1454,153 @@
         exitGlow.opacity = 0.2 + Math.sin(time() * 3) * 0.15
       })
 
+      // === UPGRADE ROOM ===
+      function generateUpgradeRoom() {
+        // clear everything
+        get("platform").forEach(destroy)
+        get("enemy").forEach(destroy)
+        get("projectile").forEach(destroy)
+        get("upgradeUI").forEach(destroy)
+
+        inUpgradeRoom = true
+
+        // simple safe room - just one central platform
+        addOneWayPlatform("platform-lg", 300, 400)
+
+        // show upgrade choices after brief delay
+        wait(0.3, () => showUpgradeChoice())
+      }
+
+      function showUpgradeChoice() {
+        // pick 2 random upgrades that haven't been applied
+        const available = UPGRADES.filter(u => !appliedUpgrades.includes(u.id))
+        if (available.length < 2) return  // no more upgrades
+
+        const shuffled = available.sort(() => Math.random() - 0.5)
+        const choices = shuffled.slice(0, 2)
+
+        // title
+        add([
+          text("UPGRADE", { size: 32 }),
+          pos(width() / 2, 100),
+          anchor("center"),
+          color(255, 0, 64),
+          z(Z.HUD + 10),
+          "upgradeUI",
+        ])
+
+        // create upgrade option boxes
+        choices.forEach((upgrade, i) => {
+          const boxX = width() / 2 - 150 + i * 300
+          const boxY = 280
+
+          // box background
+          const box = add([
+            rect(200, 140, { radius: 8 }),
+            pos(boxX, boxY),
+            anchor("center"),
+            color(30, 30, 40),
+            outline(2, { color: rgb(100, 100, 120) }),
+            area(),
+            z(Z.HUD + 10),
+            "upgradeUI",
+            "upgradeBox",
+            { upgradeData: upgrade, selected: false },
+          ])
+
+          // upgrade name
+          add([
+            text(upgrade.name, { size: 20 }),
+            pos(boxX, boxY - 35),
+            anchor("center"),
+            color(255, 255, 255),
+            z(Z.HUD + 11),
+            "upgradeUI",
+          ])
+
+          // upgrade description
+          add([
+            text(upgrade.desc, { size: 14 }),
+            pos(boxX, boxY + 5),
+            anchor("center"),
+            color(180, 180, 180),
+            z(Z.HUD + 11),
+            "upgradeUI",
+          ])
+
+          // key hint
+          add([
+            text(`Press ${i + 1}`, { size: 18 }),
+            pos(boxX, boxY + 45),
+            anchor("center"),
+            color(255, 0, 64),
+            z(Z.HUD + 11),
+            "upgradeUI",
+          ])
+        })
+
+        // handle keyboard selection
+        const key1 = onKeyPress("1", () => {
+          selectUpgrade(choices[0])
+          key1.cancel()
+          key2.cancel()
+        })
+        const key2 = onKeyPress("2", () => {
+          selectUpgrade(choices[1])
+          key1.cancel()
+          key2.cancel()
+        })
+      }
+
+      function selectUpgrade(upgrade) {
+        // apply the upgrade
+        upgrade.apply()
+        appliedUpgrades.push(upgrade.id)
+
+        // flash effect
+        get("upgradeUI").forEach(destroy)
+
+        // show confirmation
+        const confirmText = add([
+          text(`${upgrade.name}!`, { size: 28 }),
+          pos(width() / 2, 200),
+          anchor("center"),
+          color(0, 255, 128),
+          opacity(1),
+          z(Z.HUD + 10),
+          "upgradeUI",
+        ])
+
+        // particles
+        for (let i = 0; i < 20; i++) {
+          add([
+            circle(rand(3, 6)),
+            pos(width() / 2 + rand(-100, 100), 200 + rand(-30, 30)),
+            color(0, 255, 128),
+            opacity(1),
+            move(rand(0, 360), rand(50, 150)),
+            lifespan(0.5, { fade: 0.3 }),
+            z(Z.PARTICLES),
+          ])
+        }
+
+        // clear upgrade room flag and show exit hint
+        wait(0.8, () => {
+          destroy(confirmText)
+          inUpgradeRoom = false
+
+          add([
+            text("→ Continue", { size: 18 }),
+            pos(width() - 80, height() / 2),
+            anchor("center"),
+            color(255, 255, 255),
+            opacity(0.7),
+            z(Z.HUD + 5),
+            "upgradeUI",
+          ])
+        })
+      }
+
       // === ROOM TRANSITION ===
       function nextRoom() {
         if (transitioning) return
@@ -1239,8 +1626,12 @@
           facingDir = 1
           player.scale.x = 1
 
-          // generate new room
-          generateRoom()
+          // check for upgrade room (every 5 depths)
+          if (depth > 0 && depth % 5 === 0) {
+            generateUpgradeRoom()
+          } else {
+            generateRoom()
+          }
 
           // fade back in
           tween(flash.opacity, 0, 0.2, (v) => flash.opacity = v, easings.linear).then(() => {
@@ -1252,6 +1643,8 @@
 
       // trigger transition when player enters exit zone
       player.onCollide("exit", () => {
+        // block exit if in upgrade room and hasn't selected yet
+        if (inUpgradeRoom) return
         nextRoom()
       })
 
@@ -1275,14 +1668,16 @@
       ])
 
       function updateHUD() {
-        signalBar.width = (signal / SIGNAL_MAX) * 200
-        signalText.text = `SIGNAL: ${Math.floor(signal)}/${SIGNAL_MAX}`
+        signalBar.width = (signal / playerStats.maxSignal) * 200
+        signalText.text = `SIGNAL: ${Math.floor(signal)}/${playerStats.maxSignal}`
         if (signal < 3) {
           signalBar.opacity = 0.5 + Math.sin(time() * 10) * 0.5
         } else {
           signalBar.opacity = 1
         }
-        healthText.text = "HEALTH: " + "♥".repeat(health) + "♡".repeat(5 - health)
+        const hp = Math.max(0, health)
+        const maxHp = playerStats.maxHealth
+        healthText.text = "HEALTH: " + "♥".repeat(hp) + "♡".repeat(maxHp - hp)
       }
 
       // === HYBRID GRAVITY ===
@@ -1305,13 +1700,13 @@
         let isMoving = false
 
         if (isKeyDown("left") || isKeyDown("a")) {
-          player.move(-SPEED, 0)
+          player.move(-playerStats.moveSpeed, 0)
           facingDir = -1
           lastMoveDir = -1
           isMoving = true
         }
         if (isKeyDown("right") || isKeyDown("d")) {
-          player.move(SPEED, 0)
+          player.move(playerStats.moveSpeed, 0)
           facingDir = 1
           lastMoveDir = 1
           isMoving = true
@@ -1323,7 +1718,7 @@
 
         // signal regen/drain
         if (lastMoveDir === 1) {
-          signal = Math.min(SIGNAL_MAX, signal + SIGNAL_REGEN_RIGHT * dt())
+          signal = Math.min(playerStats.maxSignal, signal + SIGNAL_REGEN_RIGHT * playerStats.signalRegen * dt())
         } else if (lastMoveDir === -1) {
           signal = Math.max(0, signal - SIGNAL_DRAIN_LEFT * dt())
         } else {
@@ -1383,7 +1778,8 @@
 
       onUpdate(() => {
         if (isDashing) {
-          player.move(DASH_SPEED * dashDir, 0)
+          const dashSpeed = playerStats.dashDistance / DASH_DURATION
+          player.move(dashSpeed * dashDir, 0)
           dashTimer -= dt()
 
           if (Math.random() < 0.5) spawnAfterimage(player)
@@ -1451,7 +1847,7 @@
           const dy = Math.abs(enemy.pos.y - slashY)
           // hit enemies within range (horizontal: 60px, vertical: 50px)
           if (dx < 60 && dy < 50) {
-            enemy.hp = (enemy.hp || 1) - 1
+            enemy.hp = (enemy.hp || 1) - playerStats.slashDamage
             shake(3)
             // flash white on hit
             enemy.color = rgb(255, 255, 255)
@@ -1459,6 +1855,10 @@
 
             if (enemy.hp <= 0) {
               spawnStaticBurst(enemy.pos)
+              // chance to drop health
+              if (Math.random() < HEALTH_DROP_CHANCE) {
+                spawnHealthDrop(enemy.pos)
+              }
               destroy(enemy)
             }
           }
