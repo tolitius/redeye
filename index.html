@@ -720,7 +720,7 @@
     function shouldShowIntro() {
       const count = getRunCount()
       // show on first run or every 10th run
-      return count === 0 || count % 10 === 0
+      return count === 0 || count % 5 === 0
     }
 
     // load sprites
@@ -988,11 +988,69 @@
         z(50),
       ])
 
+      // === NARRATIVE TEXT ===
+      const narrativeLines = [
+        "The universe speaks in red waves...",
+        "Most are blind to it",
+        "You're not. You are one with them",
+        "Your sister saw deeper...",
+        "They took her",
+        "..Static..",
+      ]
+
+      const narrativeTexts = narrativeLines.map((line, i) => {
+        return add([
+          text(line, { size: 18 }),
+          pos(center().x, height() - 80),
+          anchor("center"),
+          color(255, 60, 80),
+          opacity(0),
+          z(60),
+        ])
+      })
+
+      // === TV STATIC EFFECT ===
+      const staticLines = []
+      const staticLineCount = 80
+      for (let i = 0; i < staticLineCount; i++) {
+        const line = add([
+          rect(width(), rand(2, 6)),
+          pos(0, i * (height() / staticLineCount)),
+          color(255, 255, 255),
+          opacity(0),
+          z(200),
+        ])
+        staticLines.push(line)
+      }
+
+      let staticActive = false
+      onUpdate(() => {
+        if (!staticActive || skipped) return
+        staticLines.forEach(line => {
+          line.opacity = rand(0.1, 0.4)
+          line.pos.y = rand(0, height())
+          line.height = rand(1, 8)
+          line.color = rgb(rand(180, 255), rand(180, 255), rand(180, 255))
+        })
+      })
+
       // ========== TIMELINE ==========
 
-      // [0.5s] Cosmic threads fade in (universe already has red waves)
+      // helper: show narrative text (fade in, hold, fade out)
+      function showNarrative(index, fadeOutPrev = true) {
+        if (skipped) return
+        // fade out previous
+        if (fadeOutPrev && index > 0) {
+          tween(narrativeTexts[index - 1].opacity, 0, 0.4, (v) => narrativeTexts[index - 1].opacity = v)
+        }
+        // fade in current
+        tween(0, 0.9, 0.5, (v) => narrativeTexts[index].opacity = v)
+      }
+
+      // [0.5s] "The universe speaks in red waves..." + Cosmic threads
       wait(0.5, () => {
         if (skipped) return
+        showNarrative(0, false)
         cosmicThreads.forEach((t, i) => {
           wait(i * 0.05, () => {
             if (skipped) return
@@ -1001,16 +1059,18 @@
         })
       })
 
-      // [1.0s] Both silhouettes fade in together (siblings side by side)
-      wait(1.0, () => {
+      // [4.0s] "Most are blind to it" + Silhouettes fade in
+      wait(4.0, () => {
         if (skipped) return
+        showNarrative(1)
         tween(0, 1, 0.4, (v) => silhouette.opacity = v)
         tween(0, 1, 0.4, (v) => sisterSilhouette.opacity = v)
       })
 
-      // [1.5s] Both sets of eyes IGNITE together
-      wait(1.5, () => {
+      // [7.5s] "You're not. You are one with them" + Eyes ignite
+      wait(7.5, () => {
         if (skipped) return
+        showNarrative(2)
         canSkip = true
         tween(skipHint.opacity, 0.3, 0.5, (v) => skipHint.opacity = v)
 
@@ -1025,24 +1085,28 @@
         eyeGlow2.opacity = 0.8
         tween(12, 60, 0.6, (v) => { eyeGlow1.radius = v; eyeGlow2.radius = v }, easings.easeOutQuad)
         tween(0.8, 0, 0.6, (v) => { eyeGlow1.opacity = v; eyeGlow2.opacity = v })
-      })
 
-      // [2.0s] Cosmic threads brighten
-      wait(2.0, () => {
-        if (skipped) return
+        // cosmic threads brighten
         cosmicThreads.forEach(t => {
           tween(t.opacity, 0.4, 0.5, (v) => t.opacity = v)
         })
       })
 
-      // [2.5s] Sister begins drifting away, wave forms to keep them connected
-      wait(2.5, () => {
+      // [11.0s] "Your sister saw deeper..." + Wave forms
+      wait(11.0, () => {
         if (skipped) return
+        showNarrative(3)
         waveActive = true
-        waveProgress = 1  // wave fully visible immediately (short distance)
+        waveProgress = 1
+      })
 
-        // sister drifts away over 3 seconds
-        const driftDuration = 3.0
+      // [14.0s] "They took her" + Sister drifts away
+      wait(14.0, () => {
+        if (skipped) return
+        showNarrative(4)
+
+        // sister drifts away over 2.5 seconds
+        const driftDuration = 2.5
         tween(sisterStartPos.x, sisterEndPos.x, driftDuration, (v) => {
           if (skipped) return
           sisterCurrentPos.x = v
@@ -1058,19 +1122,17 @@
           sisterEye2.pos.y = v
         }, easings.easeInOutQuad)
 
-        // sister silhouette shrinks as she gets farther (perspective)
+        // sister silhouette shrinks
         tween(35, 20, driftDuration, (v) => {
           if (skipped) return
           sisterSilhouette.radius = v
-          sisterRadius = v  // update wave tracking radius
+          sisterRadius = v
         }, easings.easeInOutQuad)
-        // sister eyes shrink too
         tween(6, 4, driftDuration, (v) => {
           if (skipped) return
           sisterEye1.radius = v
           sisterEye2.radius = v
         }, easings.easeInOutQuad)
-        // eye spacing shrinks
         tween(12, 8, driftDuration, (v) => {
           if (skipped) return
           sisterEye1.pos.x = sisterCurrentPos.x - v
@@ -1078,13 +1140,28 @@
         }, easings.easeInOutQuad)
       })
 
-      // [5.5s] Sister has drifted to final position, wave still flowing
-      // (wave continues flowing for ~2 more seconds)
-
-      // [7.5s] Everything fades together
-      wait(7.5, () => {
+      // [17.0s] "..Static.." + TV static effect
+      wait(17.0, () => {
         if (skipped) return
-        waveActive = false  // stop wave animation so fade works
+        showNarrative(5)
+        staticActive = true
+      })
+
+      // [19.0s] Static fades, everything else fades
+      wait(19.0, () => {
+        if (skipped) return
+        staticActive = false
+        waveActive = false
+
+        // fade out static
+        staticLines.forEach(line => {
+          tween(line.opacity, 0, 0.5, (v) => line.opacity = v)
+        })
+
+        // fade out last narrative text
+        tween(narrativeTexts[5].opacity, 0, 0.5, (v) => narrativeTexts[5].opacity = v)
+
+        // fade everything else
         cosmicThreads.forEach(t => {
           tween(t.opacity, 0, 0.5, (v) => t.opacity = v)
         })
@@ -1101,8 +1178,8 @@
         tween(sisterFaceGlow.opacity, 0, 0.5, (v) => sisterFaceGlow.opacity = v)
       })
 
-      // [8.5s] Fade to menu
-      wait(8.5, () => {
+      // [20.0s] Fade to menu
+      wait(20.0, () => {
         if (skipped) return
         goToMenu()
       })
@@ -1217,8 +1294,18 @@
       let walkFrame = 0
       let walkTimer = 0
       let depth = 1
+      let score = 0
       let transitioning = false
       let inUpgradeRoom = false
+
+      // score values per enemy type
+      const SCORE_VALUES = {
+        grunt: 10,
+        spitter: 25,
+        rusher: 50,
+        drifter: 30,
+        pillar: 75,
+      }
 
       // === PLAYER UPGRADES ===
       const playerStats = {
@@ -1630,7 +1717,7 @@
               destroy(proj)
 
               if (health <= 0) {
-                go("gameover", depth)
+                go("gameover", { depth, score })
                 return
               }
 
@@ -1748,6 +1835,15 @@
           if (!rusher.exists()) return
           if (rusher.pos.y > height() + 50) {
             destroy(rusher)
+          }
+        })
+
+        // stun when hitting player (prevents getting stuck)
+        rusher.onCollide("player", () => {
+          if (rusher.state === "charging") {
+            rusher.state = "stunned"
+            rusher.stateTimer = RUSHER_STUN_TIME
+            rusher.originalX = rusher.pos.x
           }
         })
 
@@ -1893,7 +1989,7 @@
         sisterPainTimer = 0.8
 
         if (health <= 0) {
-          go("gameover", depth)
+          go("gameover", { depth, score })
           return
         }
 
@@ -1973,6 +2069,15 @@
         pos(width() - 20, 20),
         anchor("topright"),
         color(hexToRgb(PALETTE.textDim)),
+        fixed(),
+        z(Z.HUD),
+      ])
+
+      const scoreText = add([
+        text("Score: 0", { size: 14 }),
+        pos(width() - 20, 40),
+        anchor("topright"),
+        color(255, 200, 50),
         fixed(),
         z(Z.HUD),
       ])
@@ -2489,6 +2594,14 @@
               if (Math.random() < HEALTH_DROP_CHANCE) {
                 spawnHealthDrop(enemy.pos)
               }
+              // award score based on enemy type
+              const enemyType = enemy.is("grunt") ? "grunt" :
+                               enemy.is("spitter") ? "spitter" :
+                               enemy.is("rusher") ? "rusher" :
+                               enemy.is("drifter") ? "drifter" :
+                               enemy.is("pillar") ? "pillar" : "grunt"
+              score += SCORE_VALUES[enemyType] || 10
+              scoreText.text = "Score: " + score
               destroy(enemy)
             }
           }
@@ -2581,7 +2694,7 @@
       // === FALL DEATH ===
       player.onUpdate(() => {
         if (player.pos.y > height() + 100) {
-          go("gameover", depth)
+          go("gameover", { depth, score })
         }
       })
 
@@ -2592,7 +2705,7 @@
     // ============================================
     // GAME OVER SCENE
     // ============================================
-    scene("gameover", (depth) => {
+    scene("gameover", ({ depth, score }) => {
       add([sprite("bg"), pos(0, 0), z(Z.BG)])
 
       // check for new high score
@@ -2601,30 +2714,37 @@
 
       add([
         text("SIGNAL LOST", { size: 48 }),
-        pos(center().x, 150),
+        pos(center().x, 140),
         anchor("center"),
         color(255, 0, 64),
       ])
 
       add([
         text(`Depth reached: ${depth}`, { size: 24 }),
-        pos(center().x, 240),
+        pos(center().x, 220),
         anchor("center"),
         color(hexToRgb(PALETTE.text)),
+      ])
+
+      add([
+        text(`Score: ${score}`, { size: 24 }),
+        pos(center().x, 255),
+        anchor("center"),
+        color(255, 200, 50),
       ])
 
       // high score display
       if (isNewRecord) {
         add([
           text("NEW RECORD!", { size: 20 }),
-          pos(center().x, 275),
+          pos(center().x, 295),
           anchor("center"),
           color(255, 215, 0),  // gold
         ])
       } else {
         add([
           text(`Best: ${highScore}`, { size: 18 }),
-          pos(center().x, 275),
+          pos(center().x, 295),
           anchor("center"),
           color(hexToRgb(PALETTE.textDim)),
         ])
@@ -2632,7 +2752,7 @@
 
       add([
         text("She's still waiting.", { size: 16 }),
-        pos(center().x, 330),
+        pos(center().x, 340),
         anchor("center"),
         color(hexToRgb(PALETTE.textDim)),
       ])
