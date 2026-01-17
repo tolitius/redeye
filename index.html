@@ -794,6 +794,27 @@
       return true
     }
 
+    // check if any owned upgrade requires this one
+    function hasDependentUnlock(id) {
+      for (const [otherId, unlock] of Object.entries(UNLOCKS)) {
+        if (unlock.requires === id && hasUnlock(otherId)) {
+          return otherId
+        }
+      }
+      return null
+    }
+
+    function sellUnlock(id) {
+      if (!hasUnlock(id)) return false
+      const dependent = hasDependentUnlock(id)
+      if (dependent) return false
+      const unlock = UNLOCKS[id]
+      saveData.echo += unlock.cost
+      saveData.unlocks = saveData.unlocks.filter(u => u !== id)
+      saveSave(saveData)
+      return true
+    }
+
     // calculate echo earned on death
     function calculateEchoEarned(depth, isNewBest) {
       let earned = ECHO_BY_DEPTH[Math.min(depth, 20)] || 1
@@ -828,6 +849,7 @@
         health: 5,
         signal: SIGNAL_MAX,
         damage: SLASH_DAMAGE,
+        signalRegen: 1.0,  // multiplier
         abilities: []
       }
 
@@ -844,6 +866,8 @@
       // apply fever dream stat bonuses (phase 2)
       stats.health += saveData.stats.bonusHealth || 0
       stats.signal += saveData.stats.bonusSignal || 0
+      stats.damage += saveData.stats.bonusDamage || 0
+      stats.signalRegen += saveData.stats.bonusRegen || 0
 
       return stats
     }
@@ -851,6 +875,68 @@
     function shouldShowIntro() {
       // show on first run or every 5th run
       return saveData.totalRuns === 0 || saveData.totalRuns % 5 === 0
+    }
+
+    // === FEVER DREAM SYSTEM (Phase 2) ===
+
+    // check if fever dream triggers on death
+    function checkFeverDream() {
+      const deathCount = saveData.totalRuns
+      const roll = Math.random()
+
+      // early deaths: higher stat echo chance
+      if (deathCount <= 5) {
+        if (roll < 0.6) return 'statEcho'
+        return null
+      }
+
+      // mid game: stat echo + memory surge (phase 3)
+      if (deathCount <= 15) {
+        if (roll < 0.5) return 'statEcho'
+        // if (roll < 0.7) return 'memorySurge'  // phase 3
+        return null
+      }
+
+      // later: all types available
+      if (deathCount <= 30) {
+        if (roll < 0.4) return 'statEcho'
+        // if (roll < 0.65) return 'memorySurge'  // phase 3
+        // if (roll < 0.8) return 'resonance'     // phase 3
+        return null
+      }
+
+      // veteran: includes interference (phase 4)
+      if (roll < 0.3) return 'statEcho'
+      // if (roll < 0.5) return 'memorySurge'   // phase 3
+      // if (roll < 0.65) return 'resonance'    // phase 3
+      // if (roll < 0.8) return 'interference'  // phase 4
+      return null
+    }
+
+    // stat echo options with weights
+    const STAT_ECHOES = [
+      { key: 'bonusHealth', amount: 0.5, text: '+0.5 Max Health', weight: 0.25 },
+      { key: 'bonusSignal', amount: 0.5, text: '+0.5 Max Signal', weight: 0.30 },
+      { key: 'bonusDamage', amount: 0.05, text: '+0.05 Blade Damage', weight: 0.20 },
+      { key: 'bonusRegen', amount: 0.05, text: '+0.05 Signal Regen', weight: 0.25 },
+    ]
+
+    function weightedRandom(items) {
+      const totalWeight = items.reduce((sum, item) => sum + item.weight, 0)
+      let random = Math.random() * totalWeight
+      for (const item of items) {
+        random -= item.weight
+        if (random <= 0) return item
+      }
+      return items[items.length - 1]
+    }
+
+    // apply stat echo and return the text to display
+    function applyStatEcho() {
+      const selected = weightedRandom(STAT_ECHOES)
+      saveData.stats[selected.key] = (saveData.stats[selected.key] || 0) + selected.amount
+      saveSave(saveData)
+      return selected.text
     }
 
     // load sprites
@@ -1423,6 +1509,46 @@
       if (saveData.echo > 0) {
         onKeyPress("u", () => go("upgrades"))
       }
+
+      // reset save data (hold backspace for 2 seconds)
+      let resetHoldTime = 0
+      let resetWarning = null
+
+      onKeyDown("backspace", () => {
+        resetHoldTime += dt()
+
+        if (resetHoldTime > 0.5 && !resetWarning) {
+          resetWarning = add([
+            text("Hold to reset all progress...", { size: 14 }),
+            pos(center().x, height() - 60),
+            anchor("center"),
+            color(255, 100, 100),
+          ])
+        }
+
+        if (resetHoldTime > 2) {
+          // reset save data
+          localStorage.removeItem(SAVE_KEY)
+          saveData = getDefaultSave()
+          go("menu")  // reload menu with fresh data
+        }
+      })
+
+      onKeyRelease("backspace", () => {
+        resetHoldTime = 0
+        if (resetWarning) {
+          destroy(resetWarning)
+          resetWarning = null
+        }
+      })
+
+      // hint for reset
+      add([
+        text("Hold BACKSPACE to reset progress", { size: 10 }),
+        pos(center().x, height() - 15),
+        anchor("center"),
+        color(80, 80, 100),
+      ])
     })
 
     // ============================================
@@ -1484,13 +1610,17 @@
           const available = canPurchase(row.id)
           const locked = unlock.requires && !hasUnlock(unlock.requires)
 
-          selectableItems.push({ id: row.id, y })
+          selectableItems.push({ id: row.id, y, unlock })
+
+          // layout: centered under title
+          // cursor(-250) checkbox(-220) name(-180 to +20) status(+80 to +180)
+          const baseX = center().x - 50  // shift whole row left
 
           // checkbox
           const checkColor = owned ? [0, 255, 100] : (available ? hexToRgb(PALETTE.upgrade) : [80, 80, 100])
           add([
-            text(owned ? "[x]" : "[ ]", { size: 16 }),
-            pos(center().x - 180, y),
+            text(owned ? "(x)" : "( )", { size: 16 }),
+            pos(baseX - 170, y),
             anchor("left"),
             color(...checkColor),
           ])
@@ -1499,7 +1629,7 @@
           const nameColor = owned ? [100, 255, 150] : (available ? hexToRgb(PALETTE.text) : [80, 80, 100])
           add([
             text(unlock.name, { size: 16 }),
-            pos(center().x - 140, y),
+            pos(baseX - 130, y),
             anchor("left"),
             color(...nameColor),
           ])
@@ -1523,33 +1653,46 @@
 
           add([
             text(statusText, { size: 14 }),
-            pos(center().x + 100, y),
+            pos(baseX + 120, y),
             anchor("left"),
             color(...statusColor),
-          ])
-
-          // description (smaller, dimmer)
-          add([
-            text(unlock.desc, { size: 12 }),
-            pos(center().x + 180, y),
-            anchor("left"),
-            color(hexToRgb(PALETTE.textDim)),
           ])
         }
       })
 
       // selection cursor
+      const baseX = center().x - 50
       const cursor = add([
         text(">", { size: 20 }),
-        pos(center().x - 200, selectableItems[0]?.y || 150),
+        pos(baseX - 190, selectableItems[0]?.y || 150),
         anchor("center"),
         color(255, 0, 64),
       ])
+
+      // description for selected item (shown at bottom of list)
+      const descY = 120 + upgradeRows.length * 32 + 20
+      const descText = add([
+        text("", { size: 13 }),
+        pos(center().x, descY),
+        anchor("center"),
+        color(hexToRgb(PALETTE.textDim)),
+      ])
+
+      function updateDescription() {
+        const item = selectableItems[selectedIndex]
+        if (item && item.unlock) {
+          descText.text = item.unlock.desc
+        } else {
+          descText.text = ""
+        }
+      }
+      updateDescription()
 
       function updateCursor() {
         if (selectableItems[selectedIndex]) {
           cursor.pos.y = selectableItems[selectedIndex].y
         }
+        updateDescription()
       }
 
       function refreshScene() {
@@ -1589,10 +1732,21 @@
         if (!item) return
 
         const unlock = UNLOCKS[item.id]
+
+        // if owned, try to sell
         if (hasUnlock(item.id)) {
-          showMessage("Already owned!", [100, 255, 150])
+          const dependent = hasDependentUnlock(item.id)
+          if (dependent) {
+            const depName = UNLOCKS[dependent].name
+            showMessage(`Sell ${depName} first`, [255, 150, 100])
+            return
+          }
+          sellUnlock(item.id)
+          showMessage(`+${unlock.cost} Echo refunded`, [100, 200, 255])
+          refreshScene()
           return
         }
+
         if (unlock.requires && !hasUnlock(unlock.requires)) {
           showMessage("Unlock previous tier first", [255, 150, 100])
           return
@@ -1611,7 +1765,7 @@
 
       // hints
       add([
-        text("ESC - Back | ENTER/SPACE - Purchase", { size: 14 }),
+        text("ESC - Back | ENTER/SPACE - Buy/Sell", { size: 14 }),
         pos(center().x, height() - 50),
         anchor("center"),
         color(hexToRgb(PALETTE.textDim)),
@@ -1637,6 +1791,12 @@
       let health = startStats.health
       const maxHealth = startStats.health
       const maxSignal = startStats.signal
+
+      // debug: log starting stats
+      console.log("[GAME START] startStats:", JSON.stringify(startStats))
+      console.log("[GAME START] saveData.stats:", JSON.stringify(saveData.stats))
+      console.log("[GAME START] saveData.unlocks:", JSON.stringify(saveData.unlocks))
+
       let facingDir = 1
       let isSlashing = false
       let slashCooldown = 0
@@ -1653,6 +1813,40 @@
       let score = 0
       let transitioning = false
       let inUpgradeRoom = false
+      let isDead = false  // prevent multiple death triggers
+
+      // show spectrum bonuses at game start if any exist
+      const bonusHealth = saveData.stats.bonusHealth || 0
+      const bonusSignal = saveData.stats.bonusSignal || 0
+      const bonusDamage = saveData.stats.bonusDamage || 0
+      const bonusRegen = saveData.stats.bonusRegen || 0
+      const hasSpectrumBonuses = bonusHealth > 0 || bonusSignal > 0 || bonusDamage > 0 || bonusRegen > 0
+
+      if (hasSpectrumBonuses) {
+        // build bonus text
+        const bonuses = []
+        if (bonusHealth > 0) bonuses.push(`+${bonusHealth.toFixed(1)} HP`)
+        if (bonusSignal > 0) bonuses.push(`+${bonusSignal.toFixed(1)} Signal`)
+        if (bonusDamage > 0) bonuses.push(`+${bonusDamage.toFixed(2)} Damage`)
+        if (bonusRegen > 0) bonuses.push(`+${bonusRegen.toFixed(2)} Regen`)
+
+        const bonusText = add([
+          text(`Spectrum memory: ${bonuses.join(", ")}`, { size: 12 }),
+          pos(center().x, 100),
+          anchor("center"),
+          color(255, 0, 64),
+          opacity(1),
+          fixed(),
+          z(Z.HUD + 10),
+        ])
+
+        // fade out after 3 seconds
+        wait(2, () => {
+          tween(bonusText.opacity, 0, 1, (v) => bonusText.opacity = v).then(() => {
+            destroy(bonusText)
+          })
+        })
+      }
 
       // score values per enemy type
       const SCORE_VALUES = {
@@ -1665,12 +1859,12 @@
 
       // === PLAYER UPGRADES ===
       const playerStats = {
-        maxHealth: maxHealth,      // from persistent unlocks
-        maxSignal: maxSignal,      // from persistent unlocks
-        slashDamage: 1,
+        maxHealth: maxHealth,                    // from persistent unlocks
+        maxSignal: maxSignal,                    // from persistent unlocks
+        slashDamage: startStats.damage,          // from persistent unlocks + fever dreams
         moveSpeed: SPEED,
         dashDistance: DASH_DISTANCE,
-        signalRegen: 1.0,  // multiplier
+        signalRegen: startStats.signalRegen,     // from persistent unlocks + fever dreams
       }
 
       const UPGRADES = [
@@ -2069,8 +2263,10 @@
               healthText.text = "HEALTH: " + "♥".repeat(Math.max(0, health))
               destroy(proj)
 
-              if (health <= 0) {
-                go("gameover", { depth, score })
+              if (health <= 0 && !isDead) {
+                isDead = true
+                console.log("[DEATH] Projectile kill - health:", health, "depth:", depth, "score:", score)
+                go("feverDream", { depth, score })
                 return
               }
 
@@ -2341,8 +2537,10 @@
         // sister feels the pain - she flickers sympathetically
         sisterPainTimer = 0.8
 
-        if (health <= 0) {
-          go("gameover", { depth, score })
+        if (health <= 0 && !isDead) {
+          isDead = true
+          console.log("[DEATH] Enemy collision - health:", health, "depth:", depth, "score:", score)
+          go("feverDream", { depth, score })
           return
         }
 
@@ -3046,8 +3244,12 @@
 
       // === FALL DEATH ===
       player.onUpdate(() => {
+        // don't trigger during room transition or if already dead
+        if (transitioning || isDead) return
         if (player.pos.y > height() + 100) {
-          go("gameover", { depth, score })
+          isDead = true
+          console.log("[DEATH] Fall death - player.y:", player.pos.y, "health:", health, "depth:", depth, "transitioning:", transitioning)
+          go("feverDream", { depth, score })
         }
       })
 
@@ -3056,13 +3258,166 @@
     })
 
     // ============================================
+    // FEVER DREAM SCENE (Phase 2)
+    // ============================================
+    scene("feverDream", ({ depth, score }) => {
+      console.log("[FEVER DREAM] Entered - depth:", depth, "score:", score, "totalRuns:", saveData.totalRuns)
+
+      const dreamType = checkFeverDream()
+      console.log("[FEVER DREAM] dreamType:", dreamType)
+
+      // no dream - go straight to gameover
+      if (!dreamType) {
+        console.log("[FEVER DREAM] No dream, going to gameover")
+        go("gameover", { depth, score })
+        return
+      }
+
+      // black background
+      add([rect(width(), height()), pos(0, 0), color(0, 0, 0), z(0)])
+
+      // create converging particles
+      const particles = []
+      const particleCount = 30
+      const centerX = center().x
+      const centerY = center().y
+
+      for (let i = 0; i < particleCount; i++) {
+        // start from edges
+        const angle = (i / particleCount) * Math.PI * 2
+        const dist = rand(300, 400)
+        const startX = centerX + Math.cos(angle) * dist
+        const startY = centerY + Math.sin(angle) * dist
+
+        const p = add([
+          circle(rand(2, 4)),
+          pos(startX, startY),
+          color(255, 0, 64),
+          opacity(0),
+          anchor("center"),
+          z(1),
+          {
+            startX,
+            startY,
+            delay: rand(0, 0.5),
+            speed: rand(0.3, 0.6),
+          },
+        ])
+        particles.push(p)
+      }
+
+      let elapsed = 0
+      let phase = 0  // 0: particles converge, 1: flash + text, 2: stat text, 3: fade out
+      let statText = ""
+
+      // main text elements (hidden initially)
+      const mainText = add([
+        text("", { size: 24 }),
+        pos(centerX, centerY - 20),
+        anchor("center"),
+        color(255, 0, 64),
+        opacity(0),
+        z(10),
+      ])
+
+      const subText = add([
+        text("", { size: 20 }),
+        pos(centerX, centerY + 20),
+        anchor("center"),
+        color(hexToRgb(PALETTE.upgrade)),
+        opacity(0),
+        z(10),
+      ])
+
+      // center glow
+      const glow = add([
+        circle(20),
+        pos(centerX, centerY),
+        color(255, 0, 64),
+        opacity(0),
+        anchor("center"),
+        z(5),
+      ])
+
+      onUpdate(() => {
+        elapsed += dt()
+
+        // phase 0: particles converge (0 - 1.5s)
+        if (phase === 0) {
+          particles.forEach(p => {
+            if (elapsed > p.delay) {
+              const t = Math.min(1, (elapsed - p.delay) * p.speed)
+              p.pos.x = lerp(p.startX, centerX, t)
+              p.pos.y = lerp(p.startY, centerY, t)
+              p.opacity = Math.min(0.8, t * 1.5)
+
+              // particles get smaller as they converge
+              const size = lerp(1, 0.3, t)
+              p.scale = vec2(size)
+            }
+          })
+
+          // glow grows
+          glow.opacity = Math.min(0.4, elapsed * 0.3)
+          glow.scale = vec2(1 + elapsed * 0.5)
+
+          if (elapsed > 1.5) {
+            phase = 1
+            // flash
+            flash(Color.fromArray([255, 0, 64]), 0.15)
+            // apply stat echo
+            if (dreamType === 'statEcho') {
+              statText = applyStatEcho()
+            }
+            mainText.text = "The spectrum remembers."
+            mainText.opacity = 1
+          }
+        }
+
+        // phase 1: show main text (1.5 - 2.5s)
+        if (phase === 1 && elapsed > 2.5) {
+          phase = 2
+          subText.text = statText
+          subText.opacity = 1
+        }
+
+        // phase 2: show stat text (2.5 - 4s)
+        if (phase === 2 && elapsed > 4) {
+          phase = 3
+        }
+
+        // phase 3: fade out and go to gameover
+        if (phase === 3) {
+          mainText.opacity -= dt() * 2
+          subText.opacity -= dt() * 2
+          glow.opacity -= dt() * 2
+          particles.forEach(p => { p.opacity -= dt() * 2 })
+
+          if (mainText.opacity <= 0) {
+            go("gameover", { depth, score })
+          }
+        }
+      })
+
+      // allow skip after main reveal
+      onKeyPress("space", () => {
+        if (phase >= 1) {
+          go("gameover", { depth, score })
+        }
+      })
+    })
+
+    // ============================================
     // GAME OVER SCENE
     // ============================================
     scene("gameover", ({ depth, score }) => {
+      console.log("[GAMEOVER] Entered - depth:", depth, "score:", score)
+
       add([sprite("bg"), pos(0, 0), z(Z.BG)])
 
       // process run end and get echo
       const { isNewBest, echoBreakdown } = onRunEnd(depth)
+      console.log("[GAMEOVER] Echo breakdown:", JSON.stringify(echoBreakdown), "isNewBest:", isNewBest)
       const prevEcho = saveData.echo - echoBreakdown.total
 
       add([
