@@ -672,55 +672,185 @@
       background: hexToRgb(PALETTE.bg),
       scale: 1,
       debug: true,
+      focus: true,  // auto-focus canvas on load
     })
 
-    // === HIGH SCORE ===
-    const STORAGE_KEY = "redeye_highscore"
-    const RUN_COUNT_KEY = "redeye_runcount"
+    // === PERSISTENT SAVE SYSTEM ===
+    const SAVE_KEY = "redeye_save"
+    const OLD_HIGHSCORE_KEY = "redeye_highscore"
+    const OLD_RUNCOUNT_KEY = "redeye_runcount"
 
-    function getHighScore() {
-      try {
-        return parseInt(localStorage.getItem(STORAGE_KEY)) || 0
-      } catch (e) {
-        return 0
+    // echo earned by depth bracket
+    const ECHO_BY_DEPTH = [
+      0,                      // depth 0 (unused)
+      1, 1, 1, 1,             // depth 1-4: 1 echo
+      3, 3, 3, 3, 3,          // depth 5-9: 3 echo
+      6, 6, 6, 6, 6,          // depth 10-14: 6 echo
+      10, 10, 10, 10, 10,     // depth 15-19: 10 echo
+      15                      // depth 20: 15 echo (victory)
+    ]
+
+    // unlock definitions
+    const UNLOCKS = {
+      // abilities (future phases)
+      push: { cost: 8, type: 'ability', name: 'Push', desc: 'Unlocks Push ability' },
+      pull: { cost: 12, type: 'ability', name: 'Pull', desc: 'Unlocks Pull ability' },
+      doubleJump: { cost: 15, type: 'ability', name: 'Double Jump', desc: 'Jump again mid-air' },
+      wallSlide: { cost: 10, type: 'ability', name: 'Wall Slide', desc: 'Slide down walls' },
+      airDash: { cost: 20, type: 'ability', name: 'Air Dash', desc: 'Dash in any direction mid-air' },
+
+      // starting bonuses
+      vitality1: { cost: 5, type: 'bonus', name: 'Vitality I', desc: '+1 starting health', stat: 'health', value: 1 },
+      vitality2: { cost: 10, type: 'bonus', name: 'Vitality II', desc: '+1 starting health', stat: 'health', value: 1, requires: 'vitality1' },
+      vitality3: { cost: 15, type: 'bonus', name: 'Vitality III', desc: '+1 starting health', stat: 'health', value: 1, requires: 'vitality2' },
+
+      attunement1: { cost: 5, type: 'bonus', name: 'Attunement I', desc: '+2 starting signal', stat: 'signal', value: 2 },
+      attunement2: { cost: 10, type: 'bonus', name: 'Attunement II', desc: '+2 starting signal', stat: 'signal', value: 2, requires: 'attunement1' },
+      attunement3: { cost: 15, type: 'bonus', name: 'Attunement III', desc: '+2 starting signal', stat: 'signal', value: 2, requires: 'attunement2' },
+
+      // quality of life
+      signalSight: { cost: 10, type: 'qol', name: 'Signal Sight', desc: 'See enemy health bars' },
+      momentum: { cost: 15, type: 'qol', name: 'Momentum', desc: 'Standing still drains 50% less signal' },
+      lastStand: { cost: 20, type: 'qol', name: 'Last Stand', desc: 'Once per run, survive lethal hit with 1 HP' },
+    }
+
+    // default save structure
+    function getDefaultSave() {
+      return {
+        echo: 0,
+        totalRuns: 0,
+        bestDepth: 0,
+        unlocks: [],
+        stats: { bonusHealth: 0, bonusSignal: 0, bonusDamage: 0, bonusRegen: 0 }
       }
     }
 
-    function saveHighScore(depth) {
+    // load save data (with migration from old format)
+    function loadSave() {
       try {
-        const current = getHighScore()
-        if (depth > current) {
-          localStorage.setItem(STORAGE_KEY, depth.toString())
-          return true  // new high score
+        const saved = localStorage.getItem(SAVE_KEY)
+        if (saved) {
+          return { ...getDefaultSave(), ...JSON.parse(saved) }
         }
-        return false
+
+        // migrate from old format if exists
+        const oldHighscore = parseInt(localStorage.getItem(OLD_HIGHSCORE_KEY)) || 0
+        const oldRuncount = parseInt(localStorage.getItem(OLD_RUNCOUNT_KEY)) || 0
+
+        if (oldHighscore > 0 || oldRuncount > 0) {
+          const migrated = getDefaultSave()
+          migrated.bestDepth = oldHighscore
+          migrated.totalRuns = oldRuncount
+          // give some echo based on previous play
+          migrated.echo = Math.floor(oldRuncount * 2)
+          saveSave(migrated)
+          // clean up old keys
+          localStorage.removeItem(OLD_HIGHSCORE_KEY)
+          localStorage.removeItem(OLD_RUNCOUNT_KEY)
+          return migrated
+        }
+
+        return getDefaultSave()
       } catch (e) {
-        return false
+        return getDefaultSave()
       }
     }
 
-    function getRunCount() {
+    function saveSave(data) {
       try {
-        return parseInt(localStorage.getItem(RUN_COUNT_KEY)) || 0
+        localStorage.setItem(SAVE_KEY, JSON.stringify(data))
       } catch (e) {
-        return 0
+        // silently fail
       }
     }
 
-    function incrementRunCount() {
-      try {
-        const count = getRunCount() + 1
-        localStorage.setItem(RUN_COUNT_KEY, count.toString())
-        return count
-      } catch (e) {
-        return 1
+    // global save data
+    let saveData = loadSave()
+
+    // helper functions
+    function getHighScore() {
+      return saveData.bestDepth
+    }
+
+    function hasUnlock(id) {
+      return saveData.unlocks.includes(id)
+    }
+
+    function canPurchase(id) {
+      const unlock = UNLOCKS[id]
+      if (!unlock) return false
+      if (hasUnlock(id)) return false
+      if (saveData.echo < unlock.cost) return false
+      if (unlock.requires && !hasUnlock(unlock.requires)) return false
+      return true
+    }
+
+    function purchaseUnlock(id) {
+      if (!canPurchase(id)) return false
+      const unlock = UNLOCKS[id]
+      saveData.echo -= unlock.cost
+      saveData.unlocks.push(id)
+      saveSave(saveData)
+      return true
+    }
+
+    // calculate echo earned on death
+    function calculateEchoEarned(depth, isNewBest) {
+      let earned = ECHO_BY_DEPTH[Math.min(depth, 20)] || 1
+      let breakdown = { base: earned, newBest: 0, total: earned }
+
+      if (isNewBest && depth > 0) {
+        breakdown.newBest = 2
+        breakdown.total += 2
       }
+
+      return breakdown
+    }
+
+    // called on death
+    function onRunEnd(depth) {
+      const isNewBest = depth > saveData.bestDepth
+      const echoBreakdown = calculateEchoEarned(depth, isNewBest)
+
+      saveData.echo += echoBreakdown.total
+      saveData.totalRuns += 1
+      if (isNewBest) {
+        saveData.bestDepth = depth
+      }
+
+      saveSave(saveData)
+      return { isNewBest, echoBreakdown }
+    }
+
+    // get starting stats with unlocks applied
+    function getStartingStats() {
+      const stats = {
+        health: 5,
+        signal: SIGNAL_MAX,
+        damage: SLASH_DAMAGE,
+        abilities: []
+      }
+
+      // apply vitality bonuses
+      if (hasUnlock('vitality1')) stats.health += 1
+      if (hasUnlock('vitality2')) stats.health += 1
+      if (hasUnlock('vitality3')) stats.health += 1
+
+      // apply attunement bonuses
+      if (hasUnlock('attunement1')) stats.signal += 2
+      if (hasUnlock('attunement2')) stats.signal += 2
+      if (hasUnlock('attunement3')) stats.signal += 2
+
+      // apply fever dream stat bonuses (phase 2)
+      stats.health += saveData.stats.bonusHealth || 0
+      stats.signal += saveData.stats.bonusSignal || 0
+
+      return stats
     }
 
     function shouldShowIntro() {
-      const count = getRunCount()
-      // show on first run or every 10th run
-      return count === 0 || count % 5 === 0
+      // show on first run or every 5th run
+      return saveData.totalRuns === 0 || saveData.totalRuns % 5 === 0
     }
 
     // load sprites
@@ -743,7 +873,7 @@
     // INTRO SCENE
     // ============================================
     scene("intro", () => {
-      const isFirstRun = getRunCount() === 0
+      const isFirstRun = saveData.totalRuns === 0
       const skipDelay = isFirstRun ? 1.5 : 0
       let canSkip = !isFirstRun
       let skipped = false
@@ -1215,50 +1345,66 @@
       add([sprite("bg"), pos(0, 0), z(Z.BG)])
       loop(0.3, spawnAmbientParticle)
 
+      // echo display (top left)
+      add([
+        text(`Echo: ${saveData.echo}`, { size: 18 }),
+        pos(24, 24),
+        color(hexToRgb(PALETTE.upgrade)),
+        fixed(),
+      ])
+
       add([
         text("REDEYE", { size: 64 }),
-        pos(center().x, 140),
+        pos(center().x, 120),
         anchor("center"),
         color(255, 0, 64),
       ])
 
       add([
         text("She's still out there.", { size: 18 }),
-        pos(center().x, 280),
+        pos(center().x, 240),
         anchor("center"),
         color(hexToRgb(PALETTE.text)),
       ])
       add([
         text("Follow the signal.", { size: 18 }),
-        pos(center().x, 310),
+        pos(center().x, 270),
         anchor("center"),
         color(hexToRgb(PALETTE.textDim)),
       ])
 
       add([
-        text("Press SPACE to begin", { size: 24 }),
-        pos(center().x, 420),
+        text("SPACE - Begin", { size: 24 }),
+        pos(center().x, 360),
         anchor("center"),
         color(hexToRgb(PALETTE.text)),
       ])
 
+      // only show upgrades if player has echo
+      if (saveData.echo > 0) {
+        add([
+          text("U - Upgrades", { size: 20 }),
+          pos(center().x, 400),
+          anchor("center"),
+          color(hexToRgb(PALETTE.upgrade)),
+        ])
+      }
+
       add([
         text("Arrow keys: Move | Space: Jump | Shift: Dash | X: Slash", { size: 14 }),
-        pos(center().x, 520),
+        pos(center().x, 480),
         anchor("center"),
         color(hexToRgb(PALETTE.textDim)),
       ])
 
-      // show high score if exists
+      // show stats
       const best = getHighScore()
-      if (best > 0) {
-        add([
-          text(`Best Depth: ${best}`, { size: 16 }),
-          pos(center().x, 560),
-          anchor("center"),
-          color(255, 215, 0),  // gold
-        ])
-      }
+      add([
+        text(`Best Depth: ${best} | Runs: ${saveData.totalRuns}`, { size: 14 }),
+        pos(center().x, 520),
+        anchor("center"),
+        color(hexToRgb(PALETTE.textDim)),
+      ])
 
       const sig = add([
         circle(6),
@@ -1273,14 +1419,224 @@
       })
 
       onKeyPress("space", () => go("game"))
+      // only allow upgrades if player has echo
+      if (saveData.echo > 0) {
+        onKeyPress("u", () => go("upgrades"))
+      }
+    })
+
+    // ============================================
+    // UPGRADES SCENE
+    // ============================================
+    scene("upgrades", () => {
+      add([sprite("bg"), pos(0, 0), z(Z.BG)])
+
+      // echo display
+      const echoLabel = add([
+        text(`Echo: ${saveData.echo}`, { size: 24 }),
+        pos(center().x, 30),
+        anchor("center"),
+        color(hexToRgb(PALETTE.upgrade)),
+      ])
+
+      add([
+        text("UPGRADES", { size: 36 }),
+        pos(center().x, 70),
+        anchor("center"),
+        color(255, 0, 64),
+      ])
+
+      // upgrade items to display
+      const upgradeRows = [
+        { section: "STARTING BONUSES", items: [] },
+        { id: 'vitality1', tier: 1 },
+        { id: 'vitality2', tier: 2 },
+        { id: 'vitality3', tier: 3 },
+        { id: 'attunement1', tier: 1 },
+        { id: 'attunement2', tier: 2 },
+        { id: 'attunement3', tier: 3 },
+        { section: "QUALITY OF LIFE", items: [] },
+        { id: 'signalSight' },
+        { id: 'momentum' },
+        { id: 'lastStand' },
+      ]
+
+      let startY = 120
+      let selectedIndex = 0
+      const selectableItems = []
+      const itemLabels = []
+
+      upgradeRows.forEach((row, i) => {
+        const y = startY + i * 32
+
+        if (row.section) {
+          // section header
+          add([
+            text(row.section, { size: 14 }),
+            pos(center().x, y),
+            anchor("center"),
+            color(hexToRgb(PALETTE.textDim)),
+          ])
+        } else {
+          // upgrade item
+          const unlock = UNLOCKS[row.id]
+          const owned = hasUnlock(row.id)
+          const available = canPurchase(row.id)
+          const locked = unlock.requires && !hasUnlock(unlock.requires)
+
+          selectableItems.push({ id: row.id, y })
+
+          // checkbox
+          const checkColor = owned ? [0, 255, 100] : (available ? hexToRgb(PALETTE.upgrade) : [80, 80, 100])
+          add([
+            text(owned ? "[x]" : "[ ]", { size: 16 }),
+            pos(center().x - 180, y),
+            anchor("left"),
+            color(...checkColor),
+          ])
+
+          // name
+          const nameColor = owned ? [100, 255, 150] : (available ? hexToRgb(PALETTE.text) : [80, 80, 100])
+          add([
+            text(unlock.name, { size: 16 }),
+            pos(center().x - 140, y),
+            anchor("left"),
+            color(...nameColor),
+          ])
+
+          // cost or status
+          let statusText = ""
+          let statusColor = [80, 80, 100]
+          if (owned) {
+            statusText = "OWNED"
+            statusColor = [100, 255, 150]
+          } else if (locked) {
+            statusText = "LOCKED"
+            statusColor = [100, 80, 80]
+          } else if (available) {
+            statusText = `${unlock.cost} Echo`
+            statusColor = hexToRgb(PALETTE.upgrade)
+          } else {
+            statusText = `${unlock.cost} Echo`
+            statusColor = [80, 80, 100]
+          }
+
+          add([
+            text(statusText, { size: 14 }),
+            pos(center().x + 100, y),
+            anchor("left"),
+            color(...statusColor),
+          ])
+
+          // description (smaller, dimmer)
+          add([
+            text(unlock.desc, { size: 12 }),
+            pos(center().x + 180, y),
+            anchor("left"),
+            color(hexToRgb(PALETTE.textDim)),
+          ])
+        }
+      })
+
+      // selection cursor
+      const cursor = add([
+        text(">", { size: 20 }),
+        pos(center().x - 200, selectableItems[0]?.y || 150),
+        anchor("center"),
+        color(255, 0, 64),
+      ])
+
+      function updateCursor() {
+        if (selectableItems[selectedIndex]) {
+          cursor.pos.y = selectableItems[selectedIndex].y
+        }
+      }
+
+      function refreshScene() {
+        go("upgrades")
+      }
+
+      onKeyPress("up", () => {
+        selectedIndex = Math.max(0, selectedIndex - 1)
+        updateCursor()
+      })
+
+      onKeyPress("down", () => {
+        selectedIndex = Math.min(selectableItems.length - 1, selectedIndex + 1)
+        updateCursor()
+      })
+
+      // message display for feedback
+      const messageText = add([
+        text("", { size: 14 }),
+        pos(center().x, height() - 80),
+        anchor("center"),
+        color(255, 100, 100),
+        opacity(0),
+      ])
+
+      let messageTimer = null
+      function showMessage(msg, col = [255, 100, 100]) {
+        messageText.text = msg
+        messageText.color = Color.fromArray(col)
+        messageText.opacity = 1
+        if (messageTimer) messageTimer.cancel()
+        messageTimer = wait(3, () => { messageText.opacity = 0 })
+      }
+
+      function tryPurchase() {
+        const item = selectableItems[selectedIndex]
+        if (!item) return
+
+        const unlock = UNLOCKS[item.id]
+        if (hasUnlock(item.id)) {
+          showMessage("Already owned!", [100, 255, 150])
+          return
+        }
+        if (unlock.requires && !hasUnlock(unlock.requires)) {
+          showMessage("Unlock previous tier first", [255, 150, 100])
+          return
+        }
+        if (saveData.echo < unlock.cost) {
+          showMessage(`Need ${unlock.cost - saveData.echo} more Echo. Earn Echo by reaching deeper depths!`, [255, 200, 100])
+          return
+        }
+
+        purchaseUnlock(item.id)
+        refreshScene()
+      }
+
+      onKeyPress("enter", tryPurchase)
+      onKeyPress("space", tryPurchase)
+
+      // hints
+      add([
+        text("ESC - Back | ENTER/SPACE - Purchase", { size: 14 }),
+        pos(center().x, height() - 50),
+        anchor("center"),
+        color(hexToRgb(PALETTE.textDim)),
+      ])
+
+      add([
+        text("Echo is earned when a run ends. Deeper = more Echo.", { size: 12 }),
+        pos(center().x, height() - 30),
+        anchor("center"),
+        color(hexToRgb(PALETTE.textDim)),
+      ])
+
+      onKeyPress("escape", () => go("menu"))
     })
 
     // ============================================
     // MAIN GAME SCENE
     // ============================================
     scene("game", () => {
-      let signal = SIGNAL_MAX
-      let health = 5
+      // apply unlocks to starting stats
+      const startStats = getStartingStats()
+      let signal = startStats.signal
+      let health = startStats.health
+      const maxHealth = startStats.health
+      const maxSignal = startStats.signal
       let facingDir = 1
       let isSlashing = false
       let slashCooldown = 0
@@ -1309,8 +1665,8 @@
 
       // === PLAYER UPGRADES ===
       const playerStats = {
-        maxHealth: 5,
-        maxSignal: SIGNAL_MAX,
+        maxHealth: maxHealth,      // from persistent unlocks
+        maxSignal: maxSignal,      // from persistent unlocks
         slashDamage: 1,
         moveSpeed: SPEED,
         dashDistance: DASH_DISTANCE,
@@ -1331,9 +1687,6 @@
       let appliedUpgrades = []
       let usedFragments = []  // track used voice fragments this run
       let lastFragmentDepth = 0  // track when we last showed a fragment
-
-      // increment run count on game start
-      incrementRunCount()
 
       // === SISTER'S VOICE FRAGMENTS ===
       const VOICE_FRAGMENTS = {
@@ -2057,7 +2410,7 @@
       ])
 
       const healthText = add([
-        text("HEALTH: " + "♥".repeat(health), { size: 16 }),
+        text("HEALTH: " + "♥".repeat(health) + "♡".repeat(maxHealth - health), { size: 16 }),
         pos(20, 62),
         color(255, 0, 64),
         fixed(),
@@ -2708,67 +3061,107 @@
     scene("gameover", ({ depth, score }) => {
       add([sprite("bg"), pos(0, 0), z(Z.BG)])
 
-      // check for new high score
-      const isNewRecord = saveHighScore(depth)
-      const highScore = getHighScore()
+      // process run end and get echo
+      const { isNewBest, echoBreakdown } = onRunEnd(depth)
+      const prevEcho = saveData.echo - echoBreakdown.total
 
       add([
         text("SIGNAL LOST", { size: 48 }),
-        pos(center().x, 140),
+        pos(center().x, 100),
         anchor("center"),
         color(255, 0, 64),
       ])
 
       add([
         text(`Depth reached: ${depth}`, { size: 24 }),
-        pos(center().x, 220),
+        pos(center().x, 170),
         anchor("center"),
         color(hexToRgb(PALETTE.text)),
       ])
 
       add([
-        text(`Score: ${score}`, { size: 24 }),
-        pos(center().x, 255),
+        text(`Score: ${score}`, { size: 20 }),
+        pos(center().x, 205),
         anchor("center"),
         color(255, 200, 50),
       ])
 
-      // high score display
-      if (isNewRecord) {
+      // echo earned box
+      const boxY = 270
+      add([
+        rect(200, 90, { radius: 4 }),
+        pos(center().x, boxY),
+        anchor("center"),
+        color(30, 30, 50),
+        outline(2, Color.fromArray(hexToRgb(PALETTE.aura))),
+      ])
+
+      add([
+        text(`+${echoBreakdown.base} Echo collected`, { size: 18 }),
+        pos(center().x, boxY - 25),
+        anchor("center"),
+        color(hexToRgb(PALETTE.upgrade)),
+      ])
+
+      if (echoBreakdown.newBest > 0) {
         add([
-          text("NEW RECORD!", { size: 20 }),
-          pos(center().x, 295),
+          text(`+${echoBreakdown.newBest} new depth bonus`, { size: 14 }),
+          pos(center().x, boxY),
           anchor("center"),
-          color(255, 215, 0),  // gold
+          color(255, 215, 0),
+        ])
+      }
+
+      add([
+        text(`+${echoBreakdown.total} total`, { size: 16 }),
+        pos(center().x, boxY + 25),
+        anchor("center"),
+        color(hexToRgb(PALETTE.text)),
+      ])
+
+      // total echo display - make it clear it's saved
+      add([
+        text(`Your Echo: ${saveData.echo}`, { size: 20 }),
+        pos(center().x, 340),
+        anchor("center"),
+        color(hexToRgb(PALETTE.upgrade)),
+      ])
+      add([
+        text("(saved)", { size: 12 }),
+        pos(center().x, 360),
+        anchor("center"),
+        color(hexToRgb(PALETTE.textDim)),
+      ])
+
+      // high score display
+      if (isNewBest) {
+        add([
+          text("NEW RECORD!", { size: 18 }),
+          pos(center().x, 395),
+          anchor("center"),
+          color(255, 215, 0),
         ])
       } else {
         add([
-          text(`Best: ${highScore}`, { size: 18 }),
-          pos(center().x, 295),
+          text(`Best: ${saveData.bestDepth}`, { size: 16 }),
+          pos(center().x, 395),
           anchor("center"),
           color(hexToRgb(PALETTE.textDim)),
         ])
       }
 
       add([
-        text("She's still waiting.", { size: 16 }),
-        pos(center().x, 340),
+        text("She's still waiting.", { size: 14 }),
+        pos(center().x, 440),
         anchor("center"),
         color(hexToRgb(PALETTE.textDim)),
       ])
 
       add([
-        text("Press R to try again", { size: 20 }),
-        pos(center().x, 420),
+        text("R to retry | ESC for menu", { size: 18 }),
+        pos(center().x, 500),
         anchor("center"),
         color(hexToRgb(PALETTE.text)),
-      ])
-
-      add([
-        text("Press ESC for menu", { size: 14 }),
-        pos(center().x, 460),
-        anchor("center"),
-        color(hexToRgb(PALETTE.textDim)),
       ])
 
       onKeyPress("r", () => go("game"))
