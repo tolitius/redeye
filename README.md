@@ -1,12 +1,13 @@
-# redeye universe
+# redeye <img width="46" height="46" alt="image" src="https://github.com/user-attachments/assets/14603e55-9482-4d8b-ad47-c616f6b5fdc0" />
 
-> *"she's still out there. follow the signal."*
 
-story, mechanics, systems, and implementation
 
-🕹️ [play](https://gitpod.com/g/redeye/)
+> *"she's still out there. follow the signal" 🕹️ [play](https://gitpod.com/g/redeye/)*
 
+###### _made by [salvador](https://github.com/tolitius/salvador) <img width="31" height="22" alt="image" src="https://github.com/user-attachments/assets/e67783b0-e477-4b62-a059-fb73c9346ef9" />_
 ---
+ 
+story, mechanics, systems, and implementation
 
 1. [Story & Lore](#story--lore)
 2. [Gameplay Overview](#gameplay-overview)
