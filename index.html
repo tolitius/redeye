@@ -674,6 +674,30 @@
       debug: true,
     })
 
+    // === HIGH SCORE ===
+    const STORAGE_KEY = "redeye_highscore"
+
+    function getHighScore() {
+      try {
+        return parseInt(localStorage.getItem(STORAGE_KEY)) || 0
+      } catch (e) {
+        return 0
+      }
+    }
+
+    function saveHighScore(depth) {
+      try {
+        const current = getHighScore()
+        if (depth > current) {
+          localStorage.setItem(STORAGE_KEY, depth.toString())
+          return true  // new high score
+        }
+        return false
+      } catch (e) {
+        return false
+      }
+    }
+
     // load sprites
     loadSprite("bg", makeGradientBg())
     loadSprite("redeye", makeRedeyeBodySprite(64))
@@ -737,6 +761,17 @@
         anchor("center"),
         color(hexToRgb(PALETTE.textDim)),
       ])
+
+      // show high score if exists
+      const best = getHighScore()
+      if (best > 0) {
+        add([
+          text(`Best Depth: ${best}`, { size: 16 }),
+          pos(center().x, 560),
+          anchor("center"),
+          color(255, 215, 0),  // gold
+        ])
+      }
 
       const sig = add([
         circle(6),
@@ -839,11 +874,12 @@
       ]
 
       function generateRoom() {
-        // clear existing platforms, enemies, projectiles, and upgrade UI
+        // clear existing platforms, enemies, projectiles, and special room elements
         get("platform").forEach(destroy)
         get("enemy").forEach(destroy)
         get("projectile").forEach(destroy)
         get("upgradeUI").forEach(destroy)
+        get("restShrine").forEach(destroy)
 
         // pick random pattern
         const pattern = ROOM_PATTERNS[Math.floor(Math.random() * ROOM_PATTERNS.length)]
@@ -1454,6 +1490,84 @@
         exitGlow.opacity = 0.2 + Math.sin(time() * 3) * 0.15
       })
 
+      // === REST ROOM ===
+      const REST_ROOM_CHANCE = 0.12  // 12% chance
+
+      function generateRestRoom() {
+        // clear everything
+        get("platform").forEach(destroy)
+        get("enemy").forEach(destroy)
+        get("projectile").forEach(destroy)
+        get("upgradeUI").forEach(destroy)
+
+        // simple safe room
+        addOneWayPlatform("platform-lg", 300, 400)
+
+        // shrine visual (glowing circle)
+        const shrine = add([
+          circle(20),
+          pos(width() / 2, height() - 70),
+          anchor("center"),
+          color(100, 255, 150),
+          opacity(0.8),
+          z(Z.PLATFORMS + 2),
+          "restShrine",
+        ])
+
+        // shrine glow effect
+        shrine.onUpdate(() => {
+          shrine.opacity = 0.5 + Math.sin(time() * 2) * 0.3
+        })
+
+        // particles around shrine
+        loop(0.3, () => {
+          if (!shrine.exists()) return
+          add([
+            circle(rand(2, 4)),
+            pos(shrine.pos.x + rand(-30, 30), shrine.pos.y + rand(-10, 20)),
+            color(100, 255, 150),
+            opacity(0.7),
+            move(90, rand(30, 60)),  // float up
+            lifespan(0.8, { fade: 0.4 }),
+            z(Z.PARTICLES),
+          ])
+        })
+
+        // "REST" title
+        add([
+          text("SANCTUARY", { size: 28 }),
+          pos(width() / 2, 100),
+          anchor("center"),
+          color(100, 255, 150),
+          z(Z.HUD + 10),
+          "upgradeUI",
+        ])
+
+        // heal player after brief delay
+        wait(0.5, () => {
+          const healAmount = 2
+          const oldHealth = health
+          health = Math.min(health + healAmount, playerStats.maxHealth)
+          const healed = health - oldHealth
+
+          if (healed > 0) {
+            floatingText(vec2(player.pos.x, player.pos.y - 40), `+${healed} HP`, [100, 255, 150])
+          }
+          updateHUD()
+
+          // show continue hint
+          add([
+            text("→ Continue", { size: 18 }),
+            pos(width() - 80, height() / 2),
+            anchor("center"),
+            color(255, 255, 255),
+            opacity(0.7),
+            z(Z.HUD + 5),
+            "upgradeUI",
+          ])
+        })
+      }
+
       // === UPGRADE ROOM ===
       function generateUpgradeRoom() {
         // clear everything
@@ -1461,6 +1575,7 @@
         get("enemy").forEach(destroy)
         get("projectile").forEach(destroy)
         get("upgradeUI").forEach(destroy)
+        get("restShrine").forEach(destroy)
 
         inUpgradeRoom = true
 
@@ -1626,9 +1741,13 @@
           facingDir = 1
           player.scale.x = 1
 
-          // check for upgrade room (every 5 depths)
+          // check for special rooms
           if (depth > 0 && depth % 5 === 0) {
+            // upgrade room every 5 depths
             generateUpgradeRoom()
+          } else if (depth > 1 && Math.random() < REST_ROOM_CHANCE) {
+            // random rest room (not on depth 1)
+            generateRestRoom()
           } else {
             generateRoom()
           }
@@ -1948,6 +2067,10 @@
     scene("gameover", (depth) => {
       add([sprite("bg"), pos(0, 0), z(Z.BG)])
 
+      // check for new high score
+      const isNewRecord = saveHighScore(depth)
+      const highScore = getHighScore()
+
       add([
         text("SIGNAL LOST", { size: 48 }),
         pos(center().x, 150),
@@ -1957,14 +2080,31 @@
 
       add([
         text(`Depth reached: ${depth}`, { size: 24 }),
-        pos(center().x, 250),
+        pos(center().x, 240),
         anchor("center"),
         color(hexToRgb(PALETTE.text)),
       ])
 
+      // high score display
+      if (isNewRecord) {
+        add([
+          text("NEW RECORD!", { size: 20 }),
+          pos(center().x, 275),
+          anchor("center"),
+          color(255, 215, 0),  // gold
+        ])
+      } else {
+        add([
+          text(`Best: ${highScore}`, { size: 18 }),
+          pos(center().x, 275),
+          anchor("center"),
+          color(hexToRgb(PALETTE.textDim)),
+        ])
+      }
+
       add([
         text("The Static consumes all.", { size: 16 }),
-        pos(center().x, 320),
+        pos(center().x, 330),
         anchor("center"),
         color(hexToRgb(PALETTE.textDim)),
       ])
