@@ -3474,8 +3474,14 @@
         // don't trigger during room transition or if already dead
         if (transitioning || isDead) return
         if (player.pos.y > height() + 100) {
+          // if player is in the exit zone area, transition instead of death
+          if (player.pos.x >= width() - 50) {
+            console.log("[TRANSITION] Fall through exit zone - triggering nextRoom")
+            nextRoom()
+            return
+          }
           isDead = true
-          console.log("[DEATH] Fall death - player.y:", player.pos.y, "health:", health, "depth:", depth, "transitioning:", transitioning)
+          console.log("[DEATH] Fall death - player.x:", player.pos.x, "player.y:", player.pos.y, "health:", health, "depth:", depth)
           go("feverDream", { depth, score })
         }
       })
