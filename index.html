@@ -1,0 +1,941 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>REDEYE</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0a15;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    canvas {
+      border-radius: 4px;
+      box-shadow: 0 0 40px rgba(255, 0, 64, 0.15);
+    }
+  </style>
+</head>
+<body>
+  <script src="https://unpkg.com/kaplay@3001/dist/kaplay.js"></script>
+  <script>
+    // ============================================
+    // REDEYE - A Sidescroller Roguelike
+    // Phase 1: Core Feel (with animated character)
+    // ============================================
+
+    // === NEON PALETTE (from design spec) ===
+    const PALETTE = {
+      bg: "#0f0f23",
+      bgLight: "#1a1a3e",
+      bgAccent: "#2a2a5e",
+      body: "#1a1a2e",
+      eyes: "#ff0040",
+      aura: "#ff0040",
+      blade: "#ff0040",
+      bladeTrail: "#ff6680",
+      enemy: "#cccccc",
+      enemyFlicker: "#ffffff",
+      health: "#4ade80",
+      signalBoost: "#60a5fa",
+      upgrade: "#fbbf24",
+      text: "#ffffff",
+      textDim: "#8080a0",
+      healthFull: "#ff0040",
+      healthEmpty: "#4a4a4a",
+      signalBar: "#ff0040",
+      signalEmpty: "#2a2a2a",
+      platform: "#464666",
+      platformDark: "#2a2a4a",
+    }
+
+    function hexToRgb(hex) {
+      const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex)
+      return result ? [
+        parseInt(result[1], 16),
+        parseInt(result[2], 16),
+        parseInt(result[3], 16)
+      ] : [0, 0, 0]
+    }
+
+    // === GAME CONSTANTS ===
+    const SPEED = 300
+    const JUMP_FORCE = 550
+    const GRAVITY_RISE = 1400
+    const GRAVITY_FALL = 1800
+    const MAX_FALL_SPEED = 600
+
+    const DASH_DISTANCE = 128
+    const DASH_DURATION = 0.15
+    const DASH_SPEED = DASH_DISTANCE / DASH_DURATION
+
+    const SIGNAL_MAX = 10
+    const SIGNAL_REGEN_RIGHT = 1.5
+    const SIGNAL_DRAIN_STILL = 0.5
+    const SIGNAL_DRAIN_LEFT = 1.5
+    const SLASH_COST = 1
+    const DASH_COST = 1
+
+    const SLASH_DURATION = 0.2
+    const SLASH_RANGE = 48
+    const SLASH_DAMAGE = 1
+
+    const Z = {
+      BG: -100,
+      BG_PARTICLES: -50,
+      PLATFORMS: 0,
+      PICKUPS: 10,
+      ENEMIES: 20,
+      PLAYER_LEGS: 28,
+      PLAYER: 30,
+      PLAYER_ARM: 32,
+      SLASH: 35,
+      PARTICLES: 50,
+      HUD: 100,
+    }
+
+    // ============================================
+    // PROCEDURAL SPRITE GENERATORS
+    // ============================================
+
+    function makeGradientBg(w = 800, h = 600) {
+      const c = document.createElement("canvas")
+      c.width = w; c.height = h
+      const ctx = c.getContext("2d")
+
+      const grad = ctx.createLinearGradient(0, 0, 0, h)
+      grad.addColorStop(0, PALETTE.bgLight)
+      grad.addColorStop(0.5, PALETTE.bg)
+      grad.addColorStop(1, "#0a0a15")
+      ctx.fillStyle = grad
+      ctx.fillRect(0, 0, w, h)
+
+      for (let i = 0; i < 60; i++) {
+        const x = Math.random() * w
+        const y = Math.random() * h * 0.8
+        const r = Math.random() * 1.5 + 0.5
+        const isRed = Math.random() < 0.15
+        ctx.fillStyle = isRed ? "rgba(255,0,64,0.3)" : `rgba(255,255,255,${0.1 + Math.random() * 0.15})`
+        ctx.beginPath()
+        ctx.arc(x, y, r, 0, Math.PI * 2)
+        ctx.fill()
+      }
+
+      return c.toDataURL()
+    }
+
+    // redeye sprite - full cloaked figure with glowing eyes
+    function makeRedeyeBodySprite(size = 64) {
+      const c = document.createElement("canvas")
+      c.width = size
+      c.height = size
+      const ctx = c.getContext("2d")
+
+      const cx = size / 2
+      const cy = size * 0.45
+
+      // red aura glow
+      const auraGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, size * 0.55)
+      auraGrad.addColorStop(0, "rgba(255,0,64,0.25)")
+      auraGrad.addColorStop(0.5, "rgba(255,0,64,0.1)")
+      auraGrad.addColorStop(1, "transparent")
+      ctx.fillStyle = auraGrad
+      ctx.fillRect(0, 0, c.width, c.height)
+
+      // full cloak body - tall flowing robe (slimmer)
+      const bodyGrad = ctx.createLinearGradient(cx - size*0.25, 0, cx + size*0.25, size)
+      bodyGrad.addColorStop(0, "#2a2a3e")
+      bodyGrad.addColorStop(0.3, PALETTE.body)
+      bodyGrad.addColorStop(1, "#0a0a15")
+
+      ctx.fillStyle = bodyGrad
+      ctx.beginPath()
+      ctx.moveTo(cx, size * 0.05)  // top of hood
+      ctx.quadraticCurveTo(cx + size * 0.32, size * 0.1, cx + size * 0.36, size * 0.35)
+      ctx.quadraticCurveTo(cx + size * 0.34, size * 0.6, cx + size * 0.28, size * 0.95)
+      ctx.lineTo(cx - size * 0.28, size * 0.95)
+      ctx.quadraticCurveTo(cx - size * 0.34, size * 0.6, cx - size * 0.36, size * 0.35)
+      ctx.quadraticCurveTo(cx - size * 0.32, size * 0.1, cx, size * 0.05)
+      ctx.closePath()
+      ctx.fill()
+
+      // cloak bottom tattered edge
+      ctx.fillStyle = "#0a0a15"
+      ctx.beginPath()
+      ctx.moveTo(cx - size * 0.28, size * 0.95)
+      ctx.lineTo(cx - size * 0.24, size * 0.88)
+      ctx.lineTo(cx - size * 0.12, size * 0.95)
+      ctx.lineTo(cx, size * 0.9)
+      ctx.lineTo(cx + size * 0.12, size * 0.95)
+      ctx.lineTo(cx + size * 0.24, size * 0.88)
+      ctx.lineTo(cx + size * 0.28, size * 0.95)
+      ctx.closePath()
+      ctx.fill()
+
+      // edge highlight
+      ctx.strokeStyle = "rgba(255,255,255,0.1)"
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(cx, size * 0.05)
+      ctx.quadraticCurveTo(cx - size * 0.32, size * 0.1, cx - size * 0.36, size * 0.35)
+      ctx.stroke()
+
+      // glowing red eyes
+      const eyeY = size * 0.28
+      const eyeSpacing = size * 0.12
+      const eyeSize = size * 0.055
+
+      for (let i = 0; i < 2; i++) {
+        const ex = cx + (i === 0 ? -eyeSpacing : eyeSpacing)
+        const eyeGlow = ctx.createRadialGradient(ex, eyeY, 0, ex, eyeY, eyeSize * 4)
+        eyeGlow.addColorStop(0, "rgba(255,0,64,0.9)")
+        eyeGlow.addColorStop(0.3, "rgba(255,0,64,0.4)")
+        eyeGlow.addColorStop(1, "transparent")
+        ctx.fillStyle = eyeGlow
+        ctx.fillRect(ex - eyeSize*5, eyeY - eyeSize*5, eyeSize*10, eyeSize*10)
+      }
+
+      ctx.fillStyle = "#ff0040"
+      ctx.shadowColor = "#ff0040"
+      ctx.shadowBlur = 12
+      ctx.beginPath()
+      ctx.arc(cx - eyeSpacing, eyeY, eyeSize, 0, Math.PI * 2)
+      ctx.arc(cx + eyeSpacing, eyeY, eyeSize, 0, Math.PI * 2)
+      ctx.fill()
+
+      ctx.fillStyle = "#ff8080"
+      ctx.shadowBlur = 6
+      ctx.beginPath()
+      ctx.arc(cx - eyeSpacing, eyeY, eyeSize * 0.4, 0, Math.PI * 2)
+      ctx.arc(cx + eyeSpacing, eyeY, eyeSize * 0.4, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.shadowBlur = 0
+
+      return c.toDataURL()
+    }
+
+    // sword blade sprite - large glowing blade
+    function makeSwordArmSprite(size = 70) {
+      const c = document.createElement("canvas")
+      c.width = size
+      c.height = size * 0.25
+      const ctx = c.getContext("2d")
+
+      // outer glow
+      ctx.shadowColor = "#ff0040"
+      ctx.shadowBlur = 25
+
+      // blade body - thick glowing line
+      const bladeGrad = ctx.createLinearGradient(0, c.height/2, c.width, c.height/2)
+      bladeGrad.addColorStop(0, "#ff0040")
+      bladeGrad.addColorStop(0.6, "#ff4466")
+      bladeGrad.addColorStop(1, "#ffffff")
+
+      ctx.strokeStyle = bladeGrad
+      ctx.lineWidth = c.height * 0.6
+      ctx.lineCap = "round"
+      ctx.beginPath()
+      ctx.moveTo(8, c.height/2)
+      ctx.lineTo(c.width - 4, c.height/2)
+      ctx.stroke()
+
+      // bright core
+      ctx.shadowBlur = 15
+      ctx.strokeStyle = "#ffcccc"
+      ctx.lineWidth = c.height * 0.25
+      ctx.beginPath()
+      ctx.moveTo(10, c.height/2)
+      ctx.lineTo(c.width - 6, c.height/2)
+      ctx.stroke()
+
+      ctx.shadowBlur = 0
+
+      return c.toDataURL()
+    }
+
+    // slash arc effect
+    function makeSlashArcSprite(size = 80) {
+      const c = document.createElement("canvas")
+      c.width = size * 1.2
+      c.height = size
+      const ctx = c.getContext("2d")
+
+      const cx = size * 0.2
+      const cy = size / 2
+
+      // outer glow
+      ctx.strokeStyle = "rgba(255,0,64,0.3)"
+      ctx.lineWidth = 20
+      ctx.lineCap = "round"
+      ctx.beginPath()
+      ctx.arc(cx, cy, size * 0.45, -Math.PI * 0.5, Math.PI * 0.5)
+      ctx.stroke()
+
+      // main arc
+      ctx.strokeStyle = "#ff0040"
+      ctx.lineWidth = 6
+      ctx.shadowColor = "#ff0040"
+      ctx.shadowBlur = 20
+      ctx.beginPath()
+      ctx.arc(cx, cy, size * 0.45, -Math.PI * 0.5, Math.PI * 0.5)
+      ctx.stroke()
+
+      // bright core
+      ctx.strokeStyle = "#ff9999"
+      ctx.lineWidth = 2
+      ctx.shadowBlur = 10
+      ctx.beginPath()
+      ctx.arc(cx, cy, size * 0.45, -Math.PI * 0.45, Math.PI * 0.45)
+      ctx.stroke()
+
+      ctx.shadowBlur = 0
+
+      return c.toDataURL()
+    }
+
+    function makePlatformSprite(w = 160, h = 24) {
+      const c = document.createElement("canvas")
+      c.width = w
+      c.height = h
+      const ctx = c.getContext("2d")
+      const r = 4
+
+      const grad = ctx.createLinearGradient(0, 0, 0, h)
+      grad.addColorStop(0, PALETTE.platform)
+      grad.addColorStop(1, PALETTE.platformDark)
+      ctx.fillStyle = grad
+      ctx.beginPath()
+      ctx.roundRect(0, 0, w, h, r)
+      ctx.fill()
+
+      ctx.fillStyle = "rgba(255,255,255,0.08)"
+      ctx.fillRect(r, 1, w - r*2, 2)
+
+      ctx.strokeStyle = "rgba(255,0,64,0.15)"
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.roundRect(0.5, 0.5, w-1, h-1, r)
+      ctx.stroke()
+
+      return c.toDataURL()
+    }
+
+    function makeGroundSprite(w = 800, h = 48) {
+      const c = document.createElement("canvas")
+      c.width = w
+      c.height = h
+      const ctx = c.getContext("2d")
+
+      const grad = ctx.createLinearGradient(0, 0, 0, h)
+      grad.addColorStop(0, PALETTE.platform)
+      grad.addColorStop(0.3, PALETTE.platformDark)
+      grad.addColorStop(1, "#1a1a2a")
+      ctx.fillStyle = grad
+      ctx.fillRect(0, 0, w, h)
+
+      ctx.fillStyle = "rgba(255,255,255,0.06)"
+      ctx.fillRect(0, 0, w, 2)
+
+      ctx.strokeStyle = "rgba(0,0,0,0.1)"
+      for (let x = 40; x < w; x += 60) {
+        ctx.beginPath()
+        ctx.moveTo(x, 4)
+        ctx.lineTo(x, h - 2)
+        ctx.stroke()
+      }
+
+      return c.toDataURL()
+    }
+
+    // ============================================
+    // EFFECT HELPERS
+    // ============================================
+
+    function spawnAuraParticle(p) {
+      add([
+        circle(rand(2, 4)),
+        pos(p.x + rand(-8, 8), p.y + rand(-5, 15)),
+        color(255, 0, 64),
+        opacity(rand(0.3, 0.6)),
+        move(90, rand(20, 50)),
+        lifespan(rand(0.3, 0.6), { fade: 0.2 }),
+        scale(1),
+        z(Z.PARTICLES - 5),
+      ])
+    }
+
+    function slashBurst(p, facing) {
+      const baseAngle = facing > 0 ? 0 : 180
+      for (let i = 0; i < 12; i++) {
+        add([
+          circle(rand(2, 6)),
+          pos(p.x + facing * 30, p.y),
+          color(255, rand(0, 100), rand(64, 128)),
+          opacity(1),
+          move(baseAngle + rand(-60, 60), rand(100, 250)),
+          lifespan(0.3, { fade: 0.2 }),
+          scale(1),
+          z(Z.PARTICLES),
+        ])
+      }
+    }
+
+    function spawnAfterimage(obj) {
+      const img = add([
+        sprite("redeye"),
+        pos(obj.pos.x, obj.pos.y),
+        anchor("bot"),
+        scale(obj.scale.x, obj.scale.y),
+        opacity(0.4),
+        z(Z.PLAYER - 1),
+      ])
+      img.onUpdate(() => {
+        img.opacity -= dt() * 3
+        if (img.opacity <= 0) destroy(img)
+      })
+    }
+
+    function spawnAmbientParticle() {
+      const isRed = Math.random() < 0.2
+      add([
+        circle(rand(0.5, 2)),
+        pos(rand(0, width()), height() + 10),
+        color(isRed ? 255 : 200, isRed ? 0 : 200, isRed ? 64 : 220),
+        opacity(rand(0.05, 0.15)),
+        move(rand(80, 100), rand(10, 30)),
+        lifespan(rand(6, 12), { fade: 3 }),
+        scale(1),
+        z(Z.BG_PARTICLES),
+      ])
+    }
+
+    function floatingText(p, txt, col) {
+      const ft = add([
+        text(txt, { size: 16 }),
+        pos(p.x, p.y - 10),
+        anchor("center"),
+        color(col[0], col[1], col[2]),
+        opacity(1),
+        z(Z.PARTICLES + 10),
+      ])
+      ft.onUpdate(() => {
+        ft.pos.y -= 50 * dt()
+        ft.opacity -= 1.2 * dt()
+        if (ft.opacity <= 0) destroy(ft)
+      })
+    }
+
+    // ============================================
+    // GAME INITIALIZATION
+    // ============================================
+    kaplay({
+      width: 800,
+      height: 600,
+      background: hexToRgb(PALETTE.bg),
+      scale: 1,
+      debug: true,
+    })
+
+    // load sprites
+    loadSprite("bg", makeGradientBg())
+    loadSprite("redeye", makeRedeyeBodySprite(64))
+    loadSprite("sword-arm", makeSwordArmSprite(50))
+    loadSprite("slash-arc", makeSlashArcSprite(80))
+    loadSprite("platform-sm", makePlatformSprite(100, 20))
+    loadSprite("platform-md", makePlatformSprite(160, 24))
+    loadSprite("platform-lg", makePlatformSprite(240, 24))
+    loadSprite("ground", makeGroundSprite(800, 48))
+
+    // ============================================
+    // MENU SCENE
+    // ============================================
+    scene("menu", () => {
+      add([sprite("bg"), pos(0, 0), z(Z.BG)])
+      loop(0.3, spawnAmbientParticle)
+
+      add([
+        text("REDEYE", { size: 64 }),
+        pos(center().x, 140),
+        anchor("center"),
+        color(255, 0, 64),
+      ])
+
+      add([
+        text("Follow the Signal", { size: 20 }),
+        pos(center().x, 200),
+        anchor("center"),
+        color(hexToRgb(PALETTE.textDim)),
+      ])
+
+      add([
+        text("Your sister has been taken.", { size: 16 }),
+        pos(center().x, 300),
+        anchor("center"),
+        color(hexToRgb(PALETTE.text)),
+      ])
+      add([
+        text("Her signal calls from the depths.", { size: 16 }),
+        pos(center().x, 325),
+        anchor("center"),
+        color(hexToRgb(PALETTE.textDim)),
+      ])
+
+      add([
+        text("Press SPACE to begin", { size: 24 }),
+        pos(center().x, 420),
+        anchor("center"),
+        color(hexToRgb(PALETTE.text)),
+      ])
+
+      add([
+        text("Arrow keys: Move | Space: Jump | Shift: Dash | X: Slash", { size: 14 }),
+        pos(center().x, 520),
+        anchor("center"),
+        color(hexToRgb(PALETTE.textDim)),
+      ])
+
+      const sig = add([
+        circle(6),
+        pos(width() - 40, 40),
+        color(255, 0, 64),
+        opacity(1),
+        anchor("center"),
+      ])
+      sig.onUpdate(() => {
+        sig.opacity = 0.5 + Math.sin(time() * 2) * 0.5
+        sig.scale = vec2(1 + Math.sin(time() * 2) * 0.2)
+      })
+
+      onKeyPress("space", () => go("game"))
+    })
+
+    // ============================================
+    // MAIN GAME SCENE
+    // ============================================
+    scene("game", () => {
+      let signal = SIGNAL_MAX
+      let health = 5
+      let facingDir = 1
+      let isSlashing = false
+      let slashCooldown = 0
+      let isDashing = false
+      let dashCooldown = 0
+      let dashTimer = 0
+      let dashDir = 1
+      let iFrames = 0
+      let auraTimer = 0
+      let lastMoveDir = 0
+      let walkFrame = 0
+      let walkTimer = 0
+
+      add([sprite("bg"), pos(0, 0), z(Z.BG)])
+      loop(0.25, spawnAmbientParticle)
+
+      // === GROUND (solid, not one-way) ===
+      add([
+        sprite("ground"),
+        pos(0, height() - 48),
+        area(),
+        body({ isStatic: true }),
+        z(Z.PLATFORMS),
+        "ground",
+      ])
+
+      // === PLATFORMS (one-way) ===
+      function addOneWayPlatform(spr, x, y) {
+        return add([
+          sprite(spr),
+          pos(x, y),
+          area(),
+          body({ isStatic: true }),
+          z(Z.PLATFORMS),
+          "platform",
+          "oneWay",
+        ])
+      }
+
+      addOneWayPlatform("platform-lg", 80, 450)
+      addOneWayPlatform("platform-md", 350, 380)
+      addOneWayPlatform("platform-sm", 550, 300)
+      addOneWayPlatform("platform-md", 280, 220)
+
+      // === PLAYER ===
+      const player = add([
+        sprite("redeye"),
+        pos(100, 400),
+        area(),
+        body(),
+        anchor("bot"),
+        scale(1),
+        z(Z.PLAYER),
+        "player",
+        {
+          canDoubleJump: false,
+          hasJumped: false,
+          wasGrounded: true,
+        }
+      ])
+
+      // sword arm (hidden by default)
+      const swordArm = add([
+        sprite("sword-arm"),
+        pos(0, 0),
+        anchor("left"),  // pivot from hilt
+        scale(1),
+        opacity(0),
+        z(Z.SLASH),
+      ])
+
+      setGravity(GRAVITY_RISE)
+
+      // === ONE-WAY PLATFORM LOGIC ===
+      player.onBeforePhysicsResolve((collision) => {
+        // only affect platforms tagged "oneWay"
+        if (!collision.target.is("oneWay")) return
+
+        // pass through when moving up, collide when falling
+        if (player.vel.y < 0) {
+          collision.preventResolution()
+        }
+      })
+
+      // === HUD ===
+      add([
+        rect(204, 18),
+        pos(18, 18),
+        color(hexToRgb(PALETTE.signalEmpty)),
+        fixed(),
+        z(Z.HUD),
+      ])
+
+      const signalBar = add([
+        rect(200, 14),
+        pos(20, 20),
+        color(255, 0, 64),
+        fixed(),
+        z(Z.HUD + 1),
+      ])
+
+      const signalText = add([
+        text("SIGNAL: 10/10", { size: 14 }),
+        pos(20, 42),
+        color(hexToRgb(PALETTE.text)),
+        fixed(),
+        z(Z.HUD),
+      ])
+
+      const healthText = add([
+        text("HEALTH: " + "♥".repeat(health), { size: 16 }),
+        pos(20, 62),
+        color(255, 0, 64),
+        fixed(),
+        z(Z.HUD),
+      ])
+
+      add([
+        text("Depth: 1", { size: 14 }),
+        pos(width() - 20, 20),
+        anchor("topright"),
+        color(hexToRgb(PALETTE.textDim)),
+        fixed(),
+        z(Z.HUD),
+      ])
+
+      const sisterSignal = add([
+        circle(8),
+        pos(width() - 40, 50),
+        color(255, 0, 64),
+        opacity(1),
+        anchor("center"),
+        fixed(),
+        z(Z.HUD),
+      ])
+
+      add([
+        text("Arrow keys: Move | Space: Jump | Shift: Dash | X: Slash | R: Restart", { size: 12 }),
+        pos(width()/2, height() - 15),
+        anchor("center"),
+        color(hexToRgb(PALETTE.textDim)),
+        fixed(),
+        z(Z.HUD),
+      ])
+
+      function updateHUD() {
+        signalBar.width = (signal / SIGNAL_MAX) * 200
+        signalText.text = `SIGNAL: ${Math.floor(signal)}/${SIGNAL_MAX}`
+        if (signal < 3) {
+          signalBar.opacity = 0.5 + Math.sin(time() * 10) * 0.5
+        } else {
+          signalBar.opacity = 1
+        }
+        healthText.text = "HEALTH: " + "♥".repeat(health) + "♡".repeat(5 - health)
+      }
+
+      // === HYBRID GRAVITY ===
+      player.onUpdate(() => {
+        if (player.vel && player.vel.y < 0) {
+          setGravity(GRAVITY_RISE)
+        } else {
+          setGravity(GRAVITY_FALL)
+        }
+        if (player.vel && player.vel.y > MAX_FALL_SPEED) {
+          player.vel.y = MAX_FALL_SPEED
+        }
+      })
+
+      // === MOVEMENT & ANIMATION ===
+      onUpdate(() => {
+        if (isDashing) return
+
+        lastMoveDir = 0
+        let isMoving = false
+
+        if (isKeyDown("left") || isKeyDown("a")) {
+          player.move(-SPEED, 0)
+          facingDir = -1
+          lastMoveDir = -1
+          isMoving = true
+        }
+        if (isKeyDown("right") || isKeyDown("d")) {
+          player.move(SPEED, 0)
+          facingDir = 1
+          lastMoveDir = 1
+          isMoving = true
+        }
+
+        // update facing
+        player.scale.x = facingDir
+        swordArm.scale.x = facingDir
+
+        // signal regen/drain
+        if (lastMoveDir === 1) {
+          signal = Math.min(SIGNAL_MAX, signal + SIGNAL_REGEN_RIGHT * dt())
+        } else if (lastMoveDir === -1) {
+          signal = Math.max(0, signal - SIGNAL_DRAIN_LEFT * dt())
+        } else {
+          signal = Math.max(0, signal - SIGNAL_DRAIN_STILL * dt())
+        }
+
+        updateHUD()
+      })
+
+      // === JUMP ===
+      onKeyPress("space", () => {
+        if (isDashing) return
+
+        if (player.isGrounded()) {
+          player.jump(JUMP_FORCE)
+          player.hasJumped = false
+
+          for (let i = 0; i < 5; i++) {
+            add([
+              circle(rand(2, 4)),
+              pos(player.pos.x + rand(-10, 10), player.pos.y + 25),
+              color(150, 150, 160),
+              opacity(0.5),
+              move(rand(60, 120), rand(30, 60)),
+              lifespan(0.3, { fade: 0.2 }),
+              z(Z.PARTICLES),
+            ])
+          }
+        } else if (player.canDoubleJump && !player.hasJumped) {
+          player.jump(JUMP_FORCE * 0.85)
+          player.hasJumped = true
+          signal = Math.max(0, signal - 1)
+        }
+      })
+
+      onKeyDown("space", () => {
+        if (player.vel && player.vel.y < 0) {
+          setGravity(GRAVITY_RISE * 0.8)
+        }
+      })
+
+      // === DASH ===
+      onKeyPress("shift", () => {
+        if (isDashing || dashCooldown > 0 || signal < DASH_COST) return
+
+        isDashing = true
+        dashTimer = DASH_DURATION
+        dashDir = facingDir
+        iFrames = DASH_DURATION + 0.05
+        signal -= DASH_COST
+
+        player.scale.x = facingDir * 1.5
+        player.scale.y = 0.7
+
+        spawnAfterimage(player)
+      })
+
+      onUpdate(() => {
+        if (isDashing) {
+          player.move(DASH_SPEED * dashDir, 0)
+          dashTimer -= dt()
+
+          if (Math.random() < 0.5) spawnAfterimage(player)
+
+          if (dashTimer <= 0) {
+            isDashing = false
+            dashCooldown = 0.2
+            player.scale = vec2(facingDir, 1)
+          }
+        }
+
+        if (dashCooldown > 0) dashCooldown -= dt()
+        if (iFrames > 0) iFrames -= dt()
+      })
+
+      // === SLASH ===
+      function performSlash() {
+        if (isSlashing || slashCooldown > 0) return
+        if (signal < SLASH_COST) {
+          floatingText(vec2(player.pos.x, player.pos.y - 32), "NO SIGNAL", [255, 100, 100])
+          return
+        }
+
+        isSlashing = true
+        slashCooldown = SLASH_DURATION + 0.1
+        signal -= SLASH_COST
+
+        // show sword blade - positioned at chest level (bot anchor, so y - 40)
+        swordArm.opacity = 1
+        swordArm.scale = vec2(facingDir * 1.5, 1.5)
+        swordArm.pos = vec2(player.pos.x + facingDir * 10, player.pos.y - 40)
+        swordArm.angle = -70
+
+        // animate sword swing
+        let slashProgress = 0
+        const slashUpdate = swordArm.onUpdate(() => {
+          slashProgress += dt() / SLASH_DURATION
+          swordArm.angle = -70 + slashProgress * 120
+          swordArm.pos = vec2(
+            player.pos.x + facingDir * 10,
+            player.pos.y - 40 + slashProgress * 15
+          )
+          swordArm.scale = vec2(facingDir * 1.5, 1.5)
+          if (slashProgress >= 1) {
+            slashUpdate.cancel()
+          }
+        })
+
+        // slash arc effect
+        const slashArc = add([
+          sprite("slash-arc"),
+          pos(player.pos.x + facingDir * 45, player.pos.y - 32),
+          anchor("center"),
+          scale(facingDir * 1.2, 1.2),
+          opacity(1),
+          z(Z.SLASH),
+          area({ shape: new Rect(vec2(-40, -35), 80, 70) }),
+          "slash",
+        ])
+
+        // animate arc fade
+        slashArc.onUpdate(() => {
+          slashArc.opacity -= dt() * 5
+        })
+
+        slashBurst(vec2(player.pos.x, player.pos.y - 32), facingDir)
+        shake(5)
+
+        wait(SLASH_DURATION, () => {
+          destroy(slashArc)
+          swordArm.opacity = 0
+          swordArm.angle = 0
+          isSlashing = false
+        })
+
+        wait(SLASH_DURATION + 0.1, () => {
+          slashCooldown = 0
+        })
+      }
+
+      onKeyPress("x", performSlash)
+      onKeyPress("j", performSlash)
+
+      // === AURA PARTICLES & BREATHING ===
+      onUpdate(() => {
+        auraTimer -= dt()
+        if (auraTimer <= 0 && !isDashing) {
+          spawnAuraParticle(vec2(player.pos.x, player.pos.y - 32))
+          auraTimer = 0.15
+        }
+
+        if (!isDashing && !isSlashing) {
+          const pulse = 1 + Math.sin(time() * 1.5) * 0.03
+          player.scale.x = facingDir * pulse
+          player.scale.y = pulse
+        }
+      })
+
+      // === SISTER SIGNAL PULSE ===
+      sisterSignal.onUpdate(() => {
+        const pulse = 0.4 + Math.sin(time() * 1.5) * 0.6
+        sisterSignal.opacity = pulse
+        sisterSignal.scale = vec2(1 + Math.sin(time() * 1.5) * 0.3)
+      })
+
+      // === FALL DEATH ===
+      player.onUpdate(() => {
+        if (player.pos.y > height() + 100) {
+          go("gameover", 0)
+        }
+      })
+
+      onKeyPress("r", () => go("game"))
+      onKeyPress("escape", () => go("menu"))
+    })
+
+    // ============================================
+    // GAME OVER SCENE
+    // ============================================
+    scene("gameover", (depth) => {
+      add([sprite("bg"), pos(0, 0), z(Z.BG)])
+
+      add([
+        text("SIGNAL LOST", { size: 48 }),
+        pos(center().x, 150),
+        anchor("center"),
+        color(255, 0, 64),
+      ])
+
+      add([
+        text(`Depth reached: ${depth}`, { size: 24 }),
+        pos(center().x, 250),
+        anchor("center"),
+        color(hexToRgb(PALETTE.text)),
+      ])
+
+      add([
+        text("The Static consumes all.", { size: 16 }),
+        pos(center().x, 320),
+        anchor("center"),
+        color(hexToRgb(PALETTE.textDim)),
+      ])
+
+      add([
+        text("Press R to try again", { size: 20 }),
+        pos(center().x, 420),
+        anchor("center"),
+        color(hexToRgb(PALETTE.text)),
+      ])
+
+      add([
+        text("Press ESC for menu", { size: 14 }),
+        pos(center().x, 460),
+        anchor("center"),
+        color(hexToRgb(PALETTE.textDim)),
+      ])
+
+      onKeyPress("r", () => go("game"))
+      onKeyPress("escape", () => go("menu"))
+    })
+
+    go("menu")
+  </script>
+</body>
+</html>
