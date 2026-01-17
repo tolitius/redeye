@@ -351,6 +351,122 @@
       return c.toDataURL()
     }
 
+    // crawler enemy sprite - low wide rectangle with static effect
+    function makeCrawlerSprite(w = 28, h = 20) {
+      const c = document.createElement("canvas")
+      c.width = w
+      c.height = h
+      const ctx = c.getContext("2d")
+
+      // base body - white/grey
+      const bodyGrad = ctx.createLinearGradient(0, 0, 0, h)
+      bodyGrad.addColorStop(0, "#dddddd")
+      bodyGrad.addColorStop(0.5, "#aaaaaa")
+      bodyGrad.addColorStop(1, "#888888")
+      ctx.fillStyle = bodyGrad
+
+      // rounded rectangle body
+      ctx.beginPath()
+      ctx.roundRect(2, 4, w - 4, h - 6, 4)
+      ctx.fill()
+
+      // static noise overlay
+      ctx.fillStyle = "rgba(255,255,255,0.3)"
+      for (let i = 0; i < 15; i++) {
+        const nx = Math.random() * (w - 6) + 3
+        const ny = Math.random() * (h - 8) + 5
+        ctx.fillRect(nx, ny, 2, 2)
+      }
+
+      // dark spots (no eyes - key visual distinction)
+      ctx.fillStyle = "rgba(0,0,0,0.2)"
+      ctx.fillRect(6, 8, 4, 4)
+      ctx.fillRect(w - 10, 8, 4, 4)
+
+      // small legs
+      ctx.fillStyle = "#666666"
+      for (let i = 0; i < 4; i++) {
+        const lx = 5 + i * 6
+        ctx.fillRect(lx, h - 4, 2, 4)
+      }
+
+      return c.toDataURL()
+    }
+
+    // spitter enemy sprite - vertical blob with mouth
+    function makeSpitterSprite(w = 24, h = 36) {
+      const c = document.createElement("canvas")
+      c.width = w
+      c.height = h
+      const ctx = c.getContext("2d")
+
+      // body - vertical blob shape
+      const bodyGrad = ctx.createLinearGradient(0, 0, 0, h)
+      bodyGrad.addColorStop(0, "#cccccc")
+      bodyGrad.addColorStop(0.5, "#999999")
+      bodyGrad.addColorStop(1, "#666666")
+      ctx.fillStyle = bodyGrad
+
+      // blob body
+      ctx.beginPath()
+      ctx.ellipse(w/2, h/2 + 4, w/2 - 2, h/2 - 2, 0, 0, Math.PI * 2)
+      ctx.fill()
+
+      // mouth opening (dark hole)
+      ctx.fillStyle = "#222222"
+      ctx.beginPath()
+      ctx.ellipse(w/2, 10, 6, 4, 0, 0, Math.PI * 2)
+      ctx.fill()
+
+      // static noise
+      ctx.fillStyle = "rgba(255,255,255,0.25)"
+      for (let i = 0; i < 12; i++) {
+        const nx = Math.random() * (w - 8) + 4
+        const ny = Math.random() * (h - 10) + 8
+        ctx.fillRect(nx, ny, 2, 2)
+      }
+
+      return c.toDataURL()
+    }
+
+    // spitter projectile sprite
+    function makeProjectileSprite(size = 8) {
+      const c = document.createElement("canvas")
+      c.width = size
+      c.height = size
+      const ctx = c.getContext("2d")
+
+      // white orb with glow
+      ctx.shadowColor = "#ffffff"
+      ctx.shadowBlur = 4
+      ctx.fillStyle = "#ffffff"
+      ctx.beginPath()
+      ctx.arc(size/2, size/2, size/2 - 1, 0, Math.PI * 2)
+      ctx.fill()
+
+      // inner static
+      ctx.fillStyle = "rgba(200,200,200,0.5)"
+      ctx.fillRect(size/2 - 1, size/2 - 1, 2, 2)
+
+      return c.toDataURL()
+    }
+
+    // static death particles for enemies
+    function spawnStaticBurst(p) {
+      for (let i = 0; i < 15; i++) {
+        add([
+          rect(rand(3, 8), rand(3, 8)),
+          pos(p.x + rand(-10, 10), p.y + rand(-10, 10)),
+          color(rand(180, 255), rand(180, 255), rand(180, 255)),
+          opacity(1),
+          move(rand(0, 360), rand(80, 200)),
+          lifespan(rand(0.2, 0.5), { fade: 0.15 }),
+          rotate(rand(0, 360)),
+          z(Z.PARTICLES),
+        ])
+      }
+    }
+
     // ============================================
     // EFFECT HELPERS
     // ============================================
@@ -449,6 +565,9 @@
     loadSprite("platform-md", makePlatformSprite(160, 24))
     loadSprite("platform-lg", makePlatformSprite(240, 24))
     loadSprite("ground", makeGroundSprite(800, 48))
+    loadSprite("crawler", makeCrawlerSprite(28, 20))
+    loadSprite("spitter", makeSpitterSprite(24, 36))
+    loadSprite("projectile", makeProjectileSprite(8))
 
     // ============================================
     // MENU SCENE
@@ -531,6 +650,8 @@
       let lastMoveDir = 0
       let walkFrame = 0
       let walkTimer = 0
+      let depth = 1
+      let transitioning = false
 
       add([sprite("bg"), pos(0, 0), z(Z.BG)])
       loop(0.25, spawnAmbientParticle)
@@ -558,10 +679,56 @@
         ])
       }
 
-      addOneWayPlatform("platform-lg", 80, 450)
-      addOneWayPlatform("platform-md", 350, 380)
-      addOneWayPlatform("platform-sm", 550, 300)
-      addOneWayPlatform("platform-md", 280, 220)
+      // platform layout patterns
+      const ROOM_PATTERNS = [
+        // pattern 0: staircase right
+        [["lg", 80, 450], ["md", 350, 380], ["sm", 550, 300]],
+        // pattern 1: staircase left
+        [["sm", 100, 300], ["md", 280, 380], ["lg", 480, 450]],
+        // pattern 2: two levels
+        [["lg", 100, 450], ["lg", 500, 450], ["md", 300, 300]],
+        // pattern 3: scattered
+        [["sm", 150, 400], ["sm", 400, 350], ["sm", 600, 400], ["md", 280, 250]],
+        // pattern 4: high path
+        [["md", 80, 350], ["sm", 300, 280], ["md", 500, 350]],
+      ]
+
+      function generateRoom() {
+        // clear existing platforms, enemies, and projectiles
+        get("platform").forEach(destroy)
+        get("enemy").forEach(destroy)
+        get("projectile").forEach(destroy)
+
+        // pick random pattern
+        const pattern = ROOM_PATTERNS[Math.floor(Math.random() * ROOM_PATTERNS.length)]
+
+        // create platforms
+        pattern.forEach(([size, x, y]) => {
+          const spr = size === "lg" ? "platform-lg" : size === "md" ? "platform-md" : "platform-sm"
+          addOneWayPlatform(spr, x, y)
+        })
+
+        // spawn enemies based on depth
+        const crawlerCount = Math.min(2 + Math.floor(depth / 2), 5)
+        const spitterCount = depth >= 3 ? Math.min(1 + Math.floor((depth - 3) / 2), 2) : 0
+
+        // spawn crawlers
+        for (let i = 0; i < crawlerCount; i++) {
+          const spawnX = 400 + Math.random() * 350
+          const spawnY = 300 + Math.random() * 150
+          wait(0.5 + i * 0.5, () => spawnCrawler(spawnX, spawnY))
+        }
+
+        // spawn spitters (on platforms, stationary)
+        for (let i = 0; i < spitterCount; i++) {
+          const spawnX = 500 + Math.random() * 250
+          const spawnY = 250 + Math.random() * 100
+          wait(1 + i * 1, () => spawnSpitter(spawnX, spawnY))
+        }
+      }
+
+      // generate initial room
+      generateRoom()
 
       // === PLAYER ===
       const player = add([
@@ -603,6 +770,237 @@
         }
       })
 
+      // === CRAWLER ENEMY SYSTEM ===
+      const CRAWLER_SPEED = 120
+      let playerInvincible = false
+      let invincibleTimer = 0
+
+      function spawnCrawler(x, y) {
+        const crawler = add([
+          sprite("crawler"),
+          pos(x, y),
+          area(),
+          body(),
+          anchor("bot"),
+          scale(1),
+          z(Z.PLATFORMS + 1),
+          "enemy",
+          "crawler",
+          {
+            hp: 1,
+          }
+        ])
+
+        // AI: move toward player using position directly
+        crawler.onUpdate(() => {
+          if (!crawler.exists() || !crawler.scale || !player.exists()) return
+
+          // move toward player
+          const dir = player.pos.x > crawler.pos.x ? 1 : -1
+          crawler.pos.x += CRAWLER_SPEED * dir * dt()
+          crawler.scale.x = dir
+        })
+
+        // fall death
+        crawler.onUpdate(() => {
+          if (!crawler.exists()) return
+          if (crawler.pos.y > height() + 50) {
+            destroy(crawler)
+          }
+        })
+
+        return crawler
+      }
+
+      // === SPITTER ENEMY ===
+      const SPITTER_FIRE_RATE = 2.0  // seconds between shots
+      const SPITTER_TELEGRAPH = 0.5  // glow before firing
+      const PROJECTILE_SPEED = 250
+
+      function spawnSpitter(x, y) {
+        const spitter = add([
+          sprite("spitter"),
+          pos(x, y),
+          area(),
+          body(),
+          anchor("bot"),
+          scale(1),
+          z(Z.PLATFORMS + 1),
+          "enemy",
+          "spitter",
+          {
+            hp: 2,
+            fireTimer: SPITTER_FIRE_RATE,
+            telegraphing: false,
+          }
+        ])
+
+        // telegraph glow effect (child object)
+        const mouthGlow = add([
+          circle(6),
+          pos(0, 0),
+          color(255, 100, 100),
+          opacity(0),
+          anchor("center"),
+          z(Z.PLATFORMS + 2),
+        ])
+
+        spitter.onUpdate(() => {
+          if (!spitter.exists() || !player.exists()) {
+            if (mouthGlow.exists()) destroy(mouthGlow)
+            return
+          }
+
+          // update mouth glow position
+          mouthGlow.pos = vec2(spitter.pos.x, spitter.pos.y - 26)
+
+          // fire timer
+          spitter.fireTimer -= dt()
+
+          // telegraph phase - tilt toward player
+          if (spitter.fireTimer <= SPITTER_TELEGRAPH && !spitter.telegraphing) {
+            spitter.telegraphing = true
+            mouthGlow.opacity = 0.8
+            // tilt toward player
+            const toPlayer = player.pos.sub(spitter.pos)
+            const tiltAngle = Math.atan2(toPlayer.y, toPlayer.x) * (180 / Math.PI) + 90
+            spitter.angle = Math.max(-30, Math.min(30, tiltAngle))
+          }
+
+          // fire projectile
+          if (spitter.fireTimer <= 0) {
+            spitter.fireTimer = SPITTER_FIRE_RATE
+            spitter.telegraphing = false
+            mouthGlow.opacity = 0
+            spitter.angle = 0  // reset tilt
+
+            // calculate direction to player
+            const dir = player.pos.sub(spitter.pos).unit()
+            const mouthPos = vec2(spitter.pos.x, spitter.pos.y - 26)
+
+            // boom effect from mouth
+            for (let i = 0; i < 8; i++) {
+              add([
+                circle(rand(3, 6)),
+                pos(mouthPos.x + rand(-5, 5), mouthPos.y + rand(-5, 5)),
+                color(255, 255, 255),
+                opacity(1),
+                move(rand(0, 360), rand(60, 120)),
+                lifespan(0.2, { fade: 0.1 }),
+                z(Z.PARTICLES),
+              ])
+            }
+            // flash at mouth
+            const flash = add([
+              circle(12),
+              pos(mouthPos),
+              color(255, 255, 255),
+              opacity(0.9),
+              anchor("center"),
+              z(Z.PARTICLES),
+            ])
+            tween(flash.opacity, 0, 0.15, (v) => flash.opacity = v).then(() => destroy(flash))
+
+            // spawn projectile
+            const proj = add([
+              sprite("projectile"),
+              pos(mouthPos),
+              area(),
+              anchor("center"),
+              z(Z.PARTICLES),
+              "projectile",
+              "enemyProjectile",
+            ])
+
+            proj.onUpdate(() => {
+              if (!proj.exists()) return
+              proj.pos = proj.pos.add(dir.scale(PROJECTILE_SPEED * dt()))
+
+              // destroy if off screen
+              if (proj.pos.x < -20 || proj.pos.x > width() + 20 ||
+                  proj.pos.y < -20 || proj.pos.y > height() + 20) {
+                destroy(proj)
+              }
+            })
+
+            // projectile damages player
+            proj.onCollide("player", () => {
+              if (playerInvincible) {
+                destroy(proj)
+                return
+              }
+              health -= 1
+              healthText.text = "HEALTH: " + "♥".repeat(Math.max(0, health))
+              destroy(proj)
+
+              if (health <= 0) {
+                go("gameover", depth)
+                return
+              }
+
+              playerInvincible = true
+              invincibleTimer = 1.5
+              player.opacity = 0.5
+              shake(5)
+            })
+          }
+        })
+
+        // clean up glow on death
+        spitter.onDestroy(() => {
+          if (mouthGlow.exists()) destroy(mouthGlow)
+        })
+
+        // fall death
+        spitter.onUpdate(() => {
+          if (!spitter.exists()) return
+          if (spitter.pos.y > height() + 50) {
+            destroy(spitter)
+          }
+        })
+
+        return spitter
+      }
+
+      // === PLAYER DAMAGE FROM ENEMIES ===
+      player.onCollide("enemy", (enemy) => {
+        if (playerInvincible) return
+
+        health -= 1
+        healthText.text = "HEALTH: " + "♥".repeat(Math.max(0, health))
+
+        if (health <= 0) {
+          go("gameover", depth)
+          return
+        }
+
+        // i-frames
+        playerInvincible = true
+        invincibleTimer = 1.5
+
+        // knockback
+        const knockDir = player.pos.x > enemy.pos.x ? 1 : -1
+        player.move(knockDir * 200, -150)
+
+        // flash effect
+        player.opacity = 0.5
+        shake(5)
+      })
+
+      // i-frame timer
+      onUpdate(() => {
+        if (playerInvincible) {
+          invincibleTimer -= dt()
+          // flicker effect
+          player.opacity = Math.sin(time() * 30) > 0 ? 1 : 0.3
+          if (invincibleTimer <= 0) {
+            playerInvincible = false
+            player.opacity = 1
+          }
+        }
+      })
+
+
       // === HUD ===
       add([
         rect(204, 18),
@@ -636,7 +1034,7 @@
         z(Z.HUD),
       ])
 
-      add([
+      const depthText = add([
         text("Depth: 1", { size: 14 }),
         pos(width() - 20, 20),
         anchor("topright"),
@@ -644,6 +1042,68 @@
         fixed(),
         z(Z.HUD),
       ])
+
+      // === EXIT ZONE (right side of screen) ===
+      const exitZone = add([
+        rect(30, height()),
+        pos(width() - 30, 0),
+        area(),
+        opacity(0),
+        "exit",
+      ])
+
+      // visual indicator for exit
+      const exitGlow = add([
+        rect(4, height() - 100),
+        pos(width() - 10, 50),
+        color(255, 0, 64),
+        opacity(0.3),
+        z(Z.PLATFORMS - 1),
+      ])
+      exitGlow.onUpdate(() => {
+        exitGlow.opacity = 0.2 + Math.sin(time() * 3) * 0.15
+      })
+
+      // === ROOM TRANSITION ===
+      function nextRoom() {
+        if (transitioning) return
+        transitioning = true
+
+        // brief flash
+        const flash = add([
+          rect(width(), height()),
+          pos(0, 0),
+          color(0, 0, 0),
+          opacity(0),
+          z(Z.HUD + 50),
+        ])
+
+        // fade to black
+        tween(flash.opacity, 1, 0.2, (v) => flash.opacity = v, easings.linear).then(() => {
+          // increment depth
+          depth++
+          depthText.text = `Depth: ${depth}`
+
+          // reset player position
+          player.pos = vec2(80, 400)
+          facingDir = 1
+          player.scale.x = 1
+
+          // generate new room
+          generateRoom()
+
+          // fade back in
+          tween(flash.opacity, 0, 0.2, (v) => flash.opacity = v, easings.linear).then(() => {
+            destroy(flash)
+            transitioning = false
+          })
+        })
+      }
+
+      // trigger transition when player enters exit zone
+      player.onCollide("exit", () => {
+        nextRoom()
+      })
 
       const sisterSignal = add([
         circle(8),
@@ -825,14 +1285,56 @@
         // slash arc effect
         const slashArc = add([
           sprite("slash-arc"),
-          pos(player.pos.x + facingDir * 45, player.pos.y - 32),
+          pos(player.pos.x + facingDir * 40, player.pos.y - 32),
           anchor("center"),
           scale(facingDir * 1.2, 1.2),
           opacity(1),
           z(Z.SLASH),
-          area({ shape: new Rect(vec2(-40, -35), 80, 70) }),
-          "slash",
         ])
+
+        // manually check and damage enemies in slash range
+        const slashX = player.pos.x + facingDir * 40
+        const slashY = player.pos.y - 20
+        get("enemy").forEach((enemy) => {
+          if (!enemy.exists()) return
+          const dx = Math.abs(enemy.pos.x - slashX)
+          const dy = Math.abs(enemy.pos.y - slashY)
+          // hit enemies within range (horizontal: 60px, vertical: 50px)
+          if (dx < 60 && dy < 50) {
+            enemy.hp = (enemy.hp || 1) - 1
+            shake(3)
+            // flash white on hit
+            enemy.color = rgb(255, 255, 255)
+            wait(0.1, () => { if (enemy.exists()) enemy.color = rgb(255, 255, 255) })
+
+            if (enemy.hp <= 0) {
+              spawnStaticBurst(enemy.pos)
+              destroy(enemy)
+            }
+          }
+        })
+
+        // slash deflects projectiles
+        get("projectile").forEach((proj) => {
+          if (!proj.exists()) return
+          const dx = Math.abs(proj.pos.x - slashX)
+          const dy = Math.abs(proj.pos.y - slashY)
+          if (dx < 60 && dy < 50) {
+            // deflect spark effect
+            for (let i = 0; i < 5; i++) {
+              add([
+                circle(rand(2, 4)),
+                pos(proj.pos),
+                color(255, 200, 100),
+                opacity(1),
+                move(rand(0, 360), rand(80, 150)),
+                lifespan(0.15, { fade: 0.1 }),
+                z(Z.PARTICLES),
+              ])
+            }
+            destroy(proj)
+          }
+        })
 
         // animate arc fade
         slashArc.onUpdate(() => {
@@ -882,7 +1384,7 @@
       // === FALL DEATH ===
       player.onUpdate(() => {
         if (player.pos.y > height() + 100) {
-          go("gameover", 0)
+          go("gameover", depth)
         }
       })
 
